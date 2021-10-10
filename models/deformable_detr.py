@@ -264,7 +264,8 @@ class DeformableDETR(nn.Module):
             bs = out['pred_logits'].shape[0]
             # seg_masks shape : [n_frame x bs x num_queries, 1 , out_h, out_w]
             seg_masks = self.mask_head(srcs, bbox_masks, [features[2].tensors, features[1].tensors, features[0].tensors], bs)
-            outputs_seg_masks = seg_masks.view(batch_size*self.num_frames, self.num_queries, seg_masks.shape[-2], seg_masks.shape[-1])
+            seg_masks = seg_masks.permute(1, 0, 2, 3, 4)
+            outputs_seg_masks = seg_masks.reshape(batch_size*self.num_frames, self.num_queries, seg_masks.shape[-2], seg_masks.shape[-1])
             # out["pred_masks"] shape : [n_frame x bs, self.num_queries, out_h, out_w]
             out["pred_masks"] = outputs_seg_masks
 
@@ -417,8 +418,6 @@ class SetCriterion(nn.Module):
         """
         assert "pred_masks" in outputs
 
-        src_masks = outputs['pred_masks']
-
         src_idx = self._get_src_permutation_idx(indices)
         tgt_idx = self._get_tgt_permutation_idx(indices)
 
@@ -432,9 +431,8 @@ class SetCriterion(nn.Module):
                 targets_masks.append(t["masks"][I])
         # target_masks, valid = nested_tensor_from_tensor_list(
         #     [t["masks"] for t in targets]).decompose()
-        targets_masks, valid = nested_tensor_from_tensor_list(targets_masks).decompose()
 
-        
+        targets_masks, valid = nested_tensor_from_tensor_list(targets_masks).decompose()
         # for i in range(6):
         #     for k in range(9):
         #         viz = np.array(targets_masks[i][k].cpu(), dtype=np.float)*200
@@ -458,6 +456,8 @@ class SetCriterion(nn.Module):
         src_masks = src_masks.flatten(1)
 
         target_masks = target_masks[tgt_idx].flatten(1)
+
+
 
         losses = {
             "loss_mask": sigmoid_focal_loss(src_masks, target_masks, num_boxes),

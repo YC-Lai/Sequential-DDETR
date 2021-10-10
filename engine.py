@@ -82,7 +82,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         # add comet logger
         comet_logger.log_metric("class error", loss_dict_reduced['class_error'], step=train_step)
         comet_logger.log_metric("bbox loss", loss_dict_reduced['loss_bbox'], step=train_step)
-        comet_logger.log_metric("mask loss", loss_dict_reduced['loss_dice'], step=train_step)
+        comet_logger.log_metric("mask loss", loss_dict_reduced['loss_mask'], step=train_step)
 
         samples, coords, targets = prefetcher.next()
 

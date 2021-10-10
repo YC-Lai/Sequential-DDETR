@@ -90,7 +90,8 @@ class MaskHeadSmallConv(nn.Module):
         self.lay5 = torch.nn.Conv2d(inter_dims[3] + n_heads, inter_dims[4], 3, padding=1)
         self.gn5 = torch.nn.GroupNorm(8, inter_dims[4])
         self.out_lay = torch.nn.Conv2d(inter_dims[4], 1, 3, padding=1)
-
+        print(inter_dims[4])
+        print(inter_dims[3])
         self.dim = dim
 
         self.adapter1 = torch.nn.Conv2d(fpn_dims[0], inter_dims[1], 1)
@@ -158,9 +159,10 @@ class MaskHeadSmallConv(nn.Module):
             x_per_frame_l4 = F.relu(x_per_frame_l4)
 
             x_per_frame_l4 = self.out_lay(x_per_frame_l4)
-            x_frames.append(x_per_frame_l4)
+
+            x_frames.append(x_per_frame_l4.view(batch_size, -1, x_per_frame_l4.shape[-2], x_per_frame_l4.shape[-1]))
             
-        return torch.cat(x_frames, 0)
+        return torch.stack(x_frames, 0)
 
 
 class MHAttentionMap(nn.Module):
@@ -218,7 +220,7 @@ def dice_loss(inputs, targets, num_boxes):
     return loss.sum() / num_boxes
 
 
-def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: float = 2):
+def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.9, gamma: float = 10):
     """
     Loss used in RetinaNet for dense detection: https://arxiv.org/abs/1708.02002.
     Args:
