@@ -1,9 +1,10 @@
 # ------------------------------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2021 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------------------------------
-# Modified from https://github.com/chengdazhi/Deformable-Convolution-V2-PyTorch/tree/pytorch_1.0.0
+# Modified from DCN (https://github.com/XinyiYing/D3Dnet)
+# Copyright (c) 2018 Microsoft
 # ------------------------------------------------------------------------------------------------
 
 import os
@@ -50,7 +51,7 @@ def get_extensions():
     include_dirs = [extensions_dir]
     ext_modules = [
         extension(
-            "MultiScaleDeformableAttention",
+            "MultiScale3DDeformableAttention",
             sources,
             include_dirs=include_dirs,
             define_macros=define_macros,
@@ -60,11 +61,11 @@ def get_extensions():
     return ext_modules
 
 setup(
-    name="MultiScaleDeformableAttention",
-    version="2.0",
-    author="YC Lai",
+    name="MultiScale3DDeformableAttention",
+    version="1.0",
+    author="YC-Lai",
     url="https://github.com/YC-Lai/Sequential-DDETR.git",
-    description="PyTorch Wrapper for CUDA Functions of Multi-Scale Deformable Attention",
+    description="PyTorch Wrapper for CUDA Functions of Multi-Scale 3D Deformable Attention",
     packages=find_packages(exclude=("configs", "tests",)),
     ext_modules=get_extensions(),
     cmdclass={"build_ext": torch.utils.cpp_extension.BuildExtension},

@@ -8,17 +8,16 @@
 # ------------------------------------------------------------------------
 
 
-# Import comet_ml at the top of your file
-from comet_ml import Experiment
+import sys
+sys.path.remove('/home/aicenteruav/catkin_ws/devel/lib/python2.7/dist-packages')
 
-
+from dashboard import Dashboard
 import argparse
 import datetime
 import json
 import random
 import time
 from pathlib import Path
-
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -28,27 +27,18 @@ import datasets.samplers as samplers
 from datasets import build_dataset, get_coco_api_from_dataset
 from engine import evaluate, train_one_epoch
 from models import build_model
+from ast import arg
+import imp
 
-
-# try visualize on comet_ml
-experiment = Experiment(
-    api_key="gbIbPvPkSfvA1rSVHFO2B1qAD",
-    project_name="sequence-transformer",
-    workspace="harryyyhuang",
-)
-torch.autograd.set_detect_anomaly(True)
 
 def get_args_parser():
-    parser = argparse.ArgumentParser(
-        'Deformable DETR Detector', add_help=False)
+    parser = argparse.ArgumentParser('Sequential DDETR Detector', add_help=False)
     parser.add_argument('--lr', default=2e-4, type=float)
-    parser.add_argument('--lr_backbone_names',
-                        default=["backbone.0"], type=str, nargs='+')
+    parser.add_argument('--lr_backbone_names', default=["backbone.0"], type=str, nargs='+')
     parser.add_argument('--lr_backbone', default=2e-5, type=float)
-    parser.add_argument('--lr_linear_proj_names',
-                        default=['reference_points', 'sampling_offsets'], type=str, nargs='+')
+    parser.add_argument('--lr_linear_proj_names', default=['reference_points', 'sampling_offsets'], type=str, nargs='+')
     parser.add_argument('--lr_linear_proj_mult', default=0.1, type=float)
-    parser.add_argument('--batch_size', default=2, type=int)
+    parser.add_argument('--batch_size', default=1, type=int)
     parser.add_argument('--weight_decay', default=1e-4, type=float)
     parser.add_argument('--epochs', default=50, type=int)
     parser.add_argument('--lr_drop', default=40, type=int)
@@ -57,10 +47,10 @@ def get_args_parser():
                         help='gradient clipping max norm')
 
     parser.add_argument('--sgd', action='store_true')
+    parser.add_argument('--use_comet', action='store_true')
 
     # Variants of Deformable DETR
-    parser.add_argument('--with_box_refine',
-                        default=False, action='store_true')
+    parser.add_argument('--with_box_refine', default=False, action='store_true')
     parser.add_argument('--two_stage', default=False, action='store_true')
 
     # Model parameters
@@ -76,8 +66,7 @@ def get_args_parser():
                         help="Type of positional embedding to use on top of the image features")
     parser.add_argument('--position_embedding_scale', default=2 * np.pi, type=float,
                         help="position / size * scale")
-    parser.add_argument('--num_feature_levels', default=4,
-                        type=int, help='number of feature levels')
+    parser.add_argument('--num_feature_levels', default=4, type=int, help='number of feature levels')
 
     # * Transformer
     parser.add_argument('--enc_layers', default=6, type=int,
@@ -92,11 +81,11 @@ def get_args_parser():
                         help="Dropout applied in the transformer")
     parser.add_argument('--nheads', default=8, type=int,
                         help="Number of attention heads inside the transformer's attentions")
-    parser.add_argument('--num_queries', default=300, type=int,
+    parser.add_argument('--num_queries', default=30, type=int,
                         help="Number of query slots")
-    parser.add_argument('--dec_n_points', default=12, type=int)
-    parser.add_argument('--enc_n_points', default=12, type=int)
-    parser.add_argument('--frames', default=3, type=int)
+    parser.add_argument('--dec_n_points', default=4, type=int)
+    parser.add_argument('--enc_n_points', default=4, type=int)
+    parser.add_argument('--num_frames', default=8, type=int)
 
     # * Segmentation
     parser.add_argument('--masks', action='store_true',
@@ -115,12 +104,12 @@ def get_args_parser():
                         help="giou box coefficient in the matching cost")
 
     # * Loss coefficients
-    parser.add_argument('--mask_loss_coef', default=5, type=float)
-    parser.add_argument('--dice_loss_coef', default=5, type=float)
+    parser.add_argument('--mask_loss_coef', default=1, type=float)
+    parser.add_argument('--dice_loss_coef', default=1, type=float)
     parser.add_argument('--cls_loss_coef', default=2, type=float)
     parser.add_argument('--bbox_loss_coef', default=5, type=float)
     parser.add_argument('--giou_loss_coef', default=2, type=float)
-    parser.add_argument('--focal_alpha', default=0.9, type=float)
+    parser.add_argument('--focal_alpha', default=0.25, type=float)
 
     # dataset parameters
     parser.add_argument('--dataset_file', default='ScanNet')
@@ -138,14 +127,20 @@ def get_args_parser():
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
     parser.add_argument('--eval', action='store_true')
-    parser.add_argument('--num_workers', default=4, type=int)
-    parser.add_argument('--cache_mode', default=False,
-                        action='store_true', help='whether to cache images on memory')
+    parser.add_argument('--num_workers', default=0, type=int) # A good rule of thumb: num_worker = 4 * num_GPU
+    parser.add_argument('--cache_mode', default=False, action='store_true', help='whether to cache images on memory')
+    parser.add_argument('--load_mode', default='coords')
+    parser.add_argument('--seg_classes', default='nyu40')
 
     return parser
 
 
 def main(args):
+    if args.use_comet:
+        comet_dashboard = Dashboard(args, workspace="yc-lai", api_key="GKnLbmL22YWITOyj38b7qYe1l")
+    else:
+        comet_dashboard = None
+
     utils.init_distributed_mode(args)
     print("git:\n  {}\n".format(utils.get_sha()))
 
@@ -160,13 +155,15 @@ def main(args):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-
+    
+    # enable cuDNN autotuner can improve convolution performance
+    torch.backends.cudnn.benchmark = True
+    
     model, criterion, postprocessors = build_model(args)
     model.to(device)
 
     model_without_ddp = model
-    n_parameters = sum(p.numel()
-                       for p in model.parameters() if p.requires_grad)
+    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
 
     dataset_train = build_dataset(image_set='train', args=args)
@@ -175,18 +172,15 @@ def main(args):
     if args.distributed:
         if args.cache_mode:
             sampler_train = samplers.NodeDistributedSampler(dataset_train)
-            sampler_val = samplers.NodeDistributedSampler(
-                dataset_val, shuffle=False)
+            sampler_val = samplers.NodeDistributedSampler(dataset_val, shuffle=False)
         else:
             sampler_train = samplers.DistributedSampler(dataset_train)
-            sampler_val = samplers.DistributedSampler(
-                dataset_val, shuffle=False)
+            sampler_val = samplers.DistributedSampler(dataset_val, shuffle=False)
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
         sampler_val = torch.utils.data.SequentialSampler(dataset_val)
 
-    batch_sampler_train = torch.utils.data.BatchSampler(
-        sampler_train, args.batch_size, drop_last=True)
+    batch_sampler_train = torch.utils.data.BatchSampler(sampler_train, args.batch_size, drop_last=True)
 
     data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
                                    collate_fn=utils.collate_fn, num_workers=args.num_workers,
@@ -233,8 +227,7 @@ def main(args):
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop)
 
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
 
     if args.dataset_file == "coco_panoptic":
@@ -255,10 +248,8 @@ def main(args):
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
-        missing_keys, unexpected_keys = model_without_ddp.load_state_dict(
-            checkpoint['model'], strict=False)
-        unexpected_keys = [k for k in unexpected_keys if not (
-            k.endswith('total_params') or k.endswith('total_ops'))]
+        missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
+        unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
         if len(missing_keys) > 0:
             print('Missing Keys: {}'.format(missing_keys))
         if len(unexpected_keys) > 0:
@@ -283,28 +274,30 @@ def main(args):
             args.start_epoch = checkpoint['epoch'] + 1
         # check the resumed model
         if not args.eval:
-            test_stats, coco_evaluator = evaluate(
+            test_stats, scannet_evaluator = evaluate(
                 model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
             )
 
     if args.eval:
-        test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                              data_loader_val, base_ds, device, args.output_dir)
+        test_stats, scannet_evaluator = evaluate(model, criterion, postprocessors,
+                                                 data_loader_val, base_ds, device, args.output_dir)
         if args.output_dir:
-            utils.save_on_master(
-                coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
+            utils.save_on_master(scannet_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
         return
 
     print("Start training")
     start_time = time.time()
-    train_step = 0
-    val_step = 0
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             sampler_train.set_epoch(epoch)
-        train_stats, train_step = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm, experiment, train_step)
+        if comet_dashboard is not None:
+            comet_dashboard.set_status("training")
+        train_stats, comet_dashboard = train_one_epoch(model, criterion, data_loader_train, optimizer,
+                                      device, epoch, args.clip_max_norm, comet_dashboard)
         lr_scheduler.step()
+        
+        if comet_dashboard is not None:
+            comet_dashboard.update_epoch()
 
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
@@ -320,11 +313,16 @@ def main(args):
                     'epoch': epoch,
                     'args': args,
                 }, checkpoint_path)
-        
-        print("Evaluating ......")
-        test_stats, val_step = evaluate(
-            model, criterion, data_loader_val, device, experiment, val_step
+
+        print("\nEvaluating ......")
+        test_stats, scannet_evaluator = evaluate(
+            model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
         )
+
+        if comet_dashboard is not None:
+            comet_dashboard.set_status("evaluating")
+            comet_dashboard.log_metrics(test_stats)
+        
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in test_stats.items()},
                      'epoch': epoch,
@@ -334,16 +332,16 @@ def main(args):
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
-            # for evaluation logs
-            # if coco_evaluator is not None:
-            #     (output_dir / 'eval').mkdir(exist_ok=True)
-            #     if "bbox" in coco_evaluator.coco_eval:
-            #         filenames = ['latest.pth']
-            #         if epoch % 50 == 0:
-            #             filenames.append(f'{epoch:03}.pth')
-            #         for name in filenames:
-            #             torch.save(coco_evaluator.coco_eval["bbox"].eval,
-            #                        output_dir / "eval" / name)
+        # for evaluation logs
+        if scannet_evaluator is not None:
+            (output_dir / 'eval').mkdir(exist_ok=True)
+            if "bbox" in scannet_evaluator.coco_eval:
+                filenames = ['latest.pth']
+                if epoch % 50 == 0:
+                    filenames.append(f'{epoch:03}.pth')
+                for name in filenames:
+                    torch.save(scannet_evaluator.coco_eval["bbox"].eval,
+                               output_dir / "eval" / name)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))

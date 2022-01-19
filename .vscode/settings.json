@@ -45,5 +45,6 @@
     "stdexcept": "cpp",
     "streambuf": "cpp",
     "typeinfo": "cpp"
-  }
+  },
+  "ros.distro": "melodic"
 }

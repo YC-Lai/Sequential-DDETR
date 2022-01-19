@@ -1,11 +1,12 @@
 /*!
-**************************************************************************************************
-* Deformable DETR
+**************************************************************************
+* Sequential DDETR
 * Copyright (c) 2020 SenseTime. All Rights Reserved.
 * Licensed under the Apache License, Version 2.0 [see LICENSE for details]
-**************************************************************************************************
-* Modified from https://github.com/chengdazhi/Deformable-Convolution-V2-PyTorch/tree/pytorch_1.0.0
-**************************************************************************************************
+**************************************************************************
+* Modified from DCN (https://github.com/XinyiYing/D3Dnet)
+* Copyright (c) 2018 Microsoft
+**************************************************************************
 */
 
 #include <ATen/ATen.h>
@@ -117,7 +118,6 @@ std::vector<at::Tensor> ms_deform_attn_cuda_backward(
 
     const int batch_n = im2col_step_;
     auto per_value_size = spatial_size * num_heads * channels;
-    // change the sample loc size into 3 
     auto per_sample_loc_size = num_query * num_heads * num_levels * num_point * 3;
     auto per_attn_weight_size = num_query * num_heads * num_levels * num_point;
     auto grad_output_n =
@@ -138,6 +138,5 @@ std::vector<at::Tensor> ms_deform_attn_cuda_backward(
                     grad_attn_weight.data<scalar_t>() + n * im2col_step_ * per_attn_weight_size);
             }));
     }
-    // auto i = 0;
     return {grad_value, grad_sampling_loc, grad_attn_weight};
 }

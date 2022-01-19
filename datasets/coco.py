@@ -39,10 +39,6 @@ class CocoDetection(TvCocoDetection):
 
         if self._transforms is not None:
             img, target = self._transforms(img, target)
-        # print("boxes is ", target["boxes"].shape)
-        # print("masks", target["masks"].shape)
-        print(target)
-        exit()
         return img, target
 
 

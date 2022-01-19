@@ -13,6 +13,7 @@ Transforms and data augmentation for both image + bbox.
 import random
 
 import PIL
+from numpy import dtype
 import torch
 import torchvision.transforms as T
 import torchvision.transforms.functional as F
@@ -85,11 +86,11 @@ def hflip(image, coords, target):
     return flipped_image, flipped_coords, target
 
 
-def resize(image, coords, target, size, max_size=None):
+def resize(rgb, depth, coords, target, size, max_size=None):
     # size can be min_size (scalar) or (w, h) tuple
 
     def get_size_with_aspect_ratio(image_size, size, max_size=None):
-        w, h = image_size
+        h, w = image_size[1], image_size[2]
         if max_size is not None:
             min_original_size = float(min((w, h)))
             max_original_size = float(max((w, h)))
@@ -111,22 +112,24 @@ def resize(image, coords, target, size, max_size=None):
 
     def get_size(image_size, size, max_size=None):
         if isinstance(size, (list, tuple)):
-            return size[::-1]
+            return size
         else:
             return get_size_with_aspect_ratio(image_size, size, max_size)
 
-    size = get_size(image.size, size, max_size)
-    rescaled_image = F.resize(image, size)
-
-    rescaled_coords = torch.nn.functional.interpolate(coords[:, None].float(), size, mode="nearest")[:, 0]
-    
+    if rgb is not None:
+        size = get_size(rgb.size(), size, max_size)
+        
+        rescaled_image = F.resize(rgb, (size[0], size[1]))
+        
+        ratios = tuple(float(s) / float(s_orig)
+                    for s, s_orig in zip((rescaled_image.shape[1], rescaled_image.shape[2]), (rgb.shape[1], rgb.shape[2])))
+        ratio_height, ratio_width = ratios
+    else:
+        ratio_height, ratio_width = size[0]/target['orig_size'][0], size[1]/target['orig_size'][1]
+        rescaled_image = None
 
     if target is None:
-        return rescaled_image, None
-
-    ratios = tuple(float(s) / float(s_orig)
-                   for s, s_orig in zip(rescaled_image.size, image.size))
-    ratio_width, ratio_height = ratios
+        return rescaled_image, depth, coords, None
 
     target = target.copy()
     if "boxes" in target:
@@ -143,12 +146,11 @@ def resize(image, coords, target, size, max_size=None):
 
     h, w = size
     target["size"] = torch.tensor([h, w])
-
+    
     if "masks" in target:
         target['masks'] = torch.nn.functional.interpolate(
-            target['masks'][:, None].float(), size, mode="nearest")[:, 0] > 0.5
-
-    return rescaled_image, rescaled_coords, target
+            target['masks'][:, None].float(), (h, w), mode="nearest")[:, 0] > 0.5
+    return rescaled_image, depth, coords, target
 
 
 def pad(image, target, padding):
@@ -214,9 +216,9 @@ class RandomResize(object):
         self.sizes = sizes
         self.max_size = max_size
 
-    def __call__(self, img, coords, target=None):
+    def __call__(self, rgb, depth, coords, target=None):
         size = random.choice(self.sizes)
-        return resize(img, coords, target, size, self.max_size)
+        return resize(rgb, depth, coords, target, size, self.max_size)
 
 
 class RandomPad(object):
@@ -247,8 +249,8 @@ class RandomSelect(object):
 
 
 class ToTensor(object):
-    def __call__(self, img, coords, target):
-        return F.to_tensor(img), coords, target
+    def __call__(self, rgb, depth, coords, target):
+        return F.to_tensor(rgb), F.to_tensor(depth), F.to_tensor(coords), target
 
 
 class RandomErasing(object):
@@ -265,29 +267,34 @@ class Normalize(object):
         self.mean = mean
         self.std = std
 
-    def __call__(self, image, coords, target=None):
-        image = F.normalize(image, mean=self.mean, std=self.std)
-        coords = F.normalize(coords, mean=self.mean, std=self.std)
+    def __call__(self, rgb, depth, coords, target=None):
+        if rgb is not None:
+            image = F.normalize(rgb / 255.0, mean=self.mean, std=self.std)
+            h, w = image.shape[-2:]
+        else:
+            image = None
+            assert target is not None
+            h, w = target['size'][0], target['size'][1]
+
         if target is None:
-            return image, coords, None
+            return rgb, depth, coords, None
         target = target.copy()
-        h, w = image.shape[-2:]
         if "boxes" in target:
             boxes = target["boxes"]
             boxes = box_xyxy_to_cxcywh(boxes)
             boxes = boxes / torch.tensor([w, h, w, h], dtype=torch.float32)
             target["boxes"] = boxes
-        return image, coords, target
+        return image, depth, coords, target
 
 
 class Compose(object):
     def __init__(self, transforms):
         self.transforms = transforms
 
-    def __call__(self, image, coords, target):
+    def __call__(self, rgb, depth, coords, target):
         for t in self.transforms:
-            image, coords, target = t(image, coords, target)
-        return image, coords, target
+            rgb, depth, coords, target = t(rgb, depth, coords, target)
+        return rgb, depth, coords, target
 
     def __repr__(self):
         format_string = self.__class__.__name__ + "("

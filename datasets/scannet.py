@@ -1,246 +1,235 @@
-from genericpath import isfile
-from math import isnan
-from operator import le, pos
-from numpy.lib.type_check import imag
+from collections import OrderedDict
+from unittest import result
 import torch
-from torch import tensor
-from torch.utils import data
 from torchvision.datasets.vision import VisionDataset
-from numpy.lib.polynomial import roots
-from pathlib import Path
-from util.misc import get_local_rank, get_local_size
-import os
+import datasets.utils as utils
 import datasets.transforms as T
-from PIL import Image
-import cv2
-import numpy as np
-from numpy.linalg import inv
-from skimage.measure import regionprops
-import json
-import pandas as pd
+from pathlib import Path
 
 
-class ScanNetDetection(VisionDataset):
-    def __init__(self, data_root_path, data_list, tsv_map, transforms, target_transform=None, transform=None,
-                 cache_mode=False, local_rank=0, local_size=1, seq=3):
-        super(ScanNetDetection, self).__init__(
-            data_root_path, transform, target_transform)
+class ScanNet(VisionDataset):
+    """ScanNet dataset http://www.scan-net.org/
+    Keyword arguments:
+    - root_dir (``string``): Path to the base directory of the dataset
+    - scene_file (``string``): Path to file containing a list of scenes to be loaded
+    - transform (``callable``, optional): A function/transform that takes in a 
+    PIL image and returns a transformed version of the image. Default: None.
+    - target_transform (``callable``, optional): A function/transform that takes 
+    in the target and transforms it. Default: None.
+    - loader (``callable``, optional): A function to load an image given its path.
+    By default, ``default_loader`` is used.
+    - color_mean (``list``): A list of length 3, containing the R, G, B channelwise mean.
+    - color_std (``list``): A list of length 3, containing the R, G, B channelwise standard deviation.
+    - load_depth (``bool``): Whether or not to load depth images (architectures that use depth 
+    information need depth to be loaded).
+    - seg_classes (``string``): The palette of classes that the network should learn.
+    """
 
-        self.data_root = data_root_path
-        self.seq_size = seq
+    def __init__(self, root_dir, scene_file, tsv_map, mode='train', transforms=None, loader=utils.scannet_loader, load_mode='rgb', seg_classes='nyu40', num_frames=3):
+        super(ScanNet, self).__init__(root_dir)
+        self.transforms = transforms
+        self.root_dir = root_dir
+        self.mode = mode
+        self.loader = loader
+        self.length = 0
+        self.load_mode = load_mode
+        self.seg_classes = seg_classes
+        self.num_frames = num_frames
+        # color_encoding has to be initialized AFTER seg_classes
+        self.color_encoding = self.get_color_encoding()
+        self.preprocessing_map = utils.get_preprocessing_map(tsv_map)
 
-        text_file = open(data_list, "r")
-        self.scene_list = text_file.read().splitlines()
-        text_file.close()
+        # Get the list of scenes, and generate paths
+        scene_list = []
+        try:
+            with open(scene_file, 'r') as f:
+                scenes = f.readlines()
+                for scene in scenes:
+                    scene = scene.strip().split()
+                    scene_list.append(scene[0])
+        except Exception as e:
+            raise e
 
-        # get the number of data in each scene
-        self.scene_data_num = []
-        for scene in self.scene_list:
-            scene_img_path = os.path.join(data_root_path, scene, "color")
-            self.scene_data_num.append(len(os.listdir(scene_img_path)))
-        self._transforms = transforms
-        self.test_target = {'labels': torch.tensor([1]), 'image_id': torch.tensor([0]), 'area': torch.tensor(
-            [0]), 'iscrowd': torch.tensor([0]), 'orig_size': torch.tensor([1296, 968]), 'size': torch.tensor([1296, 968])}
+        # Get train data and labels filepaths
+        self.data = []
+        self.depth = []
+        self.labels = []
+        self.instances = []
+        self.poses = []
+        self.intrinsic = []
+        self.num_sceneData = []
+        for scene in scene_list:
+            color_images, depth_images, labels, instances, poses, intrinsic = utils.get_filenames_scannet(
+                self.root_dir, scene)
+            self.data += color_images
+            self.depth += depth_images
+            self.labels += labels
+            self.instances += instances
+            self.poses += poses
+            self.intrinsic.append(intrinsic)
+            self.length += len(color_images)
+            self.num_sceneData.append(len(color_images))
 
-        self.label_nyu_map = pd.read_csv(tsv_map, sep='\t', header=0,
-                                         usecols=["raw_category", "nyu40id"])
+    def get_len_for_cocoApi(self):
+        """ Returns the length of the dataset. """
+        return self.length
 
-    def convert_label_map(self, label_json):
-        with open(label_json) as f:
-            anno = json.load(f)
-        return anno["segGroups"]
+    def get_item_for_cocoApi(self, index):
 
-    def get_image(self, path):
-        return Image.open(path).convert('RGB')
-
-    def get_target(self, path, id, scene_aggre_label):
-        masks = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-        regions = regionprops(masks)
-        bboxes = torch.zeros((len(regions), 4))
-        labels = torch.zeros((len(regions)), dtype=torch.long)
-        masks_tensor = torch.zeros(
-            (len(regions), masks.shape[0], masks.shape[1]))
-        area = torch.zeros((len(regions)))
-        iscrowd = torch.zeros((len(regions)))
-        orig_size = torch.zeros((len(regions)))
-        size = torch.zeros((len(regions)))
-        for i, pros in enumerate(regions):
-            bboxes[i] = torch.tensor(pros.bbox)
-
-            labels[i] = torch.tensor(
-                self.label_nyu_map.loc[self.label_nyu_map['raw_category'] == scene_aggre_label[pros.label-1]["label"], 'nyu40id'].iloc[0])
-            masks_tensor[i] = torch.tensor((masks == pros.label).astype(int))
-            area[i] = torch.tensor(pros.area)
-            orig_size = torch.tensor((masks.shape[0], masks.shape[1]))
-            size = orig_size
-
-        target = {
-            'boxes': bboxes,
-            'labels': labels,
-            'masks': masks_tensor,
-            'image_id': torch.tensor([id]),
-            'area': area,
-            'iscrowd': iscrowd,
-            'orig_size': orig_size,
-            'size': size
-        }
+        data_path, label_path, instance_path = self.data[index], self.labels[index], self.instances[index]
+        path_set = dict({'rgb': data_path, 'depth': None, 'pose': None,
+                        'label': label_path, 'instance': instance_path, 'intrinsic': None})
+        rgb, depth, coords, target = self.loader(
+            index, path_set, 'load_target_only', self.preprocessing_map, self.seg_classes)
+        _, _, _, target = self.transforms(rgb, depth, coords, target)
 
         return target
 
-    def get_image_coord_target_seq(self, scene, index_inScene, index):
-        img_root = os.path.join(
-            self.data_root, self.scene_list[scene], "color")
-        mask_root = os.path.join(
-            self.data_root, self.scene_list[scene], "instance-filt")
-        depth_root = os.path.join(
-            self.data_root, self.scene_list[scene], "depth")
-        intrinsic_path = os.path.join(
-            self.data_root, self.scene_list[scene], "intrinsic", "intrinsic_depth.txt")
-        pose_root = os.path.join(
-            self.data_root, self.scene_list[scene], "pose")
+    def get_data_Id(self, index):
+        """ Cover the sequential id to the dataset id. """
+        sum = 0
+        for i, num_data in enumerate(self.num_sceneData):
+            num_data -= self.num_frames - 1
+            sum += num_data
+            if sum > index:
+                return i, index + (i + 1) * (self.num_frames - 1)
 
-        scene_aggre_label = self.convert_label_map(os.path.join(
-            self.data_root, self.scene_list[scene], self.scene_list[scene]+"_vh_clean.aggregation.json"))
-
-        img_seq = torch.zeros((self.seq_size, 3, 640, 480))
-        coord_seq = torch.zeros((self.seq_size, 3, 640, 480))
+    def get_data_sequence(self, sceneId, data_start_index):
+        data_seq = []
         target_seq = []
-        for i in range(self.seq_size):
-            img_frame = self.get_image(os.path.join(
-                img_root, str(index_inScene-i)+".jpg"))
-            target_frame = self.get_target(os.path.join(
-                mask_root, str(index_inScene-i)+".png"), index-i, scene_aggre_label)
-            depth_path = os.path.join(
-                depth_root, str(index_inScene-i)+".png")
-            intrinsic_path = intrinsic_path
+        intrinsic_path = self.intrinsic[sceneId]
+        for i in range(self.num_frames):
+            index = data_start_index - i
+            data_path, depth_path, label_path, instance_path, pose_path = self.data[
+                index], self.depth[index], self.labels[index], self.instances[index], self.poses[index]
+            path_set = dict({'rgb': data_path, 'depth': depth_path, 'pose': pose_path,
+                            'label': label_path, 'instance': instance_path, 'intrinsic': intrinsic_path})
+            rgb, depth, coords, target = self.loader(
+                index, path_set, self.load_mode, self.preprocessing_map, self.seg_classes)
+            rgb, depth, coords, target = self.transforms(rgb, depth, coords, target)
 
-            ######################################## some bug in data set fuck ###################################
-            pose_path = os.path.join(pose_root, str(index_inScene-i)+".txt")
+            # concatenate all sources into data
+            if self.load_mode == 'rgb':
+                data = rgb
+            elif self.load_mode == 'depth':
+                data = torch.cat((rgb, depth), 0)
+            else:
+                assert self.load_mode == 'coords'
+                data = torch.cat((rgb, depth, coords), 0)
 
-            pose = np.loadtxt(pose_path)
-            # try to find available pose
-            start_add_i = 1
-            while (np.isinf(pose).any() or np.isnan(pose).any()):
-                if(index_inScene-i+start_add_i < self.scene_data_num[scene]):
-                    pose_path = os.path.join(pose_root, str(
-                        index_inScene-i+start_add_i)+".txt")
-                    pose = np.loadtxt(pose_path)
-                elif(index_inScene-i-start_add_i >= 0):
-                    pose_path = os.path.join(pose_root, str(
-                        index_inScene-i-start_add_i)+".txt")
-                    pose = np.loadtxt(pose_path)
-                start_add_i += 1
-            ######################################## some bug in data set fuck ###################################
+            data_seq.append(data)
+            target_seq.append(target)
 
-            coord_frame = self.get_coord(
-                depth_path, intrinsic_path, pose)
-            img_frame, coord_frame, target_frame = self._transforms(
-                img_frame, coord_frame, target_frame)
-            coord_seq[i] = coord_frame
-            img_seq[i] = img_frame
-            target_seq.append(target_frame)
-
-        return img_seq, coord_seq, target_seq
-
-    def get_coord(self, depth_path, intrinsic_path, pose):
-        depth_img = cv2.imread(depth_path, cv2.IMREAD_ANYDEPTH)
-
-        intrinsic = np.loadtxt(intrinsic_path)
-
-        u = range(0, depth_img.shape[1])
-        v = range(0, depth_img.shape[0])
-
-        u, v = np.meshgrid(u, v)
-        u = u.astype(float)
-        v = v.astype(float)
-
-        Z = depth_img.astype(float) / 1000
-        X = (u - intrinsic[0, 2]) * Z / intrinsic[0, 0]
-        Y = (v - intrinsic[1, 2]) * Z / intrinsic[1, 1]
-
-        X = np.ravel(X)
-        Y = np.ravel(Y)
-        Z = np.ravel(Z)
-
-        # valid = Z > 0
-
-        # X = X[valid]
-        # Y = Y[valid]
-        # Z = Z[valid]
-
-        coordinate = np.vstack((X, Y, Z, np.ones(len(X))))
-        coordinate = np.dot(pose, coordinate)
-        coordinate = np.transpose(coordinate[:3])
-        coordinate = coordinate.reshape(
-            depth_img.shape[0], depth_img.shape[1], -1)
-        return torch.tensor(coordinate.transpose())
-
-    def get_coord_seq(self, scene, index_inScene):
-        depth_root = os.path.join(
-            self.data_root, self.scene_list[scene], "depth")
-        intrinsic_path = os.path.join(
-            self.data_root, self.scene_list[scene], "intrinsic", "intrinsic_depth.txt")
-        pose_root = os.path.join(
-            self.data_root, self.scene_list[scene], "pose")
-
-        coord_seq = torch.zeros((self.seq_size, 3, 640, 480))
-        for i in range(self.seq_size):
-            depth_path = os.path.join(
-                depth_root, str(index_inScene-i)+".png")
-            intrinsic_path = intrinsic_path
-            pose_path = os.path.join(
-                pose_root, str(index_inScene-i)+".txt")
-            coord_seq[i] = torch.from_numpy(self.get_coord(
-                depth_path, intrinsic_path, pose_path))
-
-        return coord_seq
-
-    def getSceneId(self, index):
-        data_num_sum = 0
-        for i, data_num in enumerate(self.scene_data_num):
-            data_num -= (self.seq_size-1)
-            data_num_sum += data_num
-            if(data_num_sum > index):
-                return i, index - (data_num_sum-data_num) + (self.seq_size-1)
+        return torch.stack(data_seq, dim=0), target_seq
 
     def __getitem__(self, index):
-        scene, img_id_in_scene = self.getSceneId(index)
-        imgs, coords, targets = self.get_image_coord_target_seq(
-            scene, img_id_in_scene, index)
-        # coords = self.get_coord_seq(scene, img_id_in_scene)
+        """ Returns element at index in the dataset.
+        Args:
+        - index (``int``): index of the item in the dataset
+        Returns:
+        A tuple of ``PIL.Image`` (image, label) where label is the ground-truth of the image
+        """
+        scene_id, data_start_id = self.get_data_Id(index)
+        data, targets = self.get_data_sequence(scene_id, data_start_id)
 
-        return imgs, coords, targets
+        return data, targets
 
     def __len__(self):
-        return sum(self.scene_data_num)-((self.seq_size-1)*len(self.scene_data_num))
+        """ Returns the sequential length of the dataset. """
+        return self.length - (self.num_frames - 1) * len(self.num_sceneData)
+
+    def get_color_encoding(self):
+        if self.seg_classes.lower() == 'nyu40':
+            """Color palette for nyu40 labels """
+            return OrderedDict([
+                ('unlabeled', (0, 0, 0)),
+                ('wall', (174, 199, 232)),
+                ('floor', (152, 223, 138)),
+                ('cabinet', (31, 119, 180)),
+                ('bed', (255, 187, 120)),
+                ('chair', (188, 189, 34)),
+                ('sofa', (140, 86, 75)),
+                ('table', (255, 152, 150)),
+                ('door', (214, 39, 40)),
+                ('window', (197, 176, 213)),
+                ('bookshelf', (148, 103, 189)),
+                ('picture', (196, 156, 148)),
+                ('counter', (23, 190, 207)),
+                ('blinds', (178, 76, 76)),
+                ('desk', (247, 182, 210)),
+                ('shelves', (66, 188, 102)),
+                ('curtain', (219, 219, 141)),
+                ('dresser', (140, 57, 197)),
+                ('pillow', (202, 185, 52)),
+                ('mirror', (51, 176, 203)),
+                ('floormat', (200, 54, 131)),
+                ('clothes', (92, 193, 61)),
+                ('ceiling', (78, 71, 183)),
+                ('books', (172, 114, 82)),
+                ('refrigerator', (255, 127, 14)),
+                ('television', (91, 163, 138)),
+                ('paper', (153, 98, 156)),
+                ('towel', (140, 153, 101)),
+                ('showercurtain', (158, 218, 229)),
+                ('box', (100, 125, 154)),
+                ('whiteboard', (178, 127, 135)),
+                ('person', (120, 185, 128)),
+                ('nightstand', (146, 111, 194)),
+                ('toilet', (44, 160, 44)),
+                ('sink', (112, 128, 144)),
+                ('lamp', (96, 207, 209)),
+                ('bathtub', (227, 119, 194)),
+                ('bag', (213, 92, 176)),
+                ('otherstructure', (94, 106, 211)),
+                ('otherfurniture', (82, 84, 163)),
+                ('otherprop', (100, 85, 144)),
+            ])
+        elif self.seg_classes.lower() == 'scannet20':
+            return OrderedDict([
+                ('unlabeled', (0, 0, 0)),
+                ('wall', (174, 199, 232)),
+                ('floor', (152, 223, 138)),
+                ('cabinet', (31, 119, 180)),
+                ('bed', (255, 187, 120)),
+                ('chair', (188, 189, 34)),
+                ('sofa', (140, 86, 75)),
+                ('table', (255, 152, 150)),
+                ('door', (214, 39, 40)),
+                ('window', (197, 176, 213)),
+                ('bookshelf', (148, 103, 189)),
+                ('picture', (196, 156, 148)),
+                ('counter', (23, 190, 207)),
+                ('desk', (247, 182, 210)),
+                ('curtain', (219, 219, 141)),
+                ('refrigerator', (255, 127, 14)),
+                ('showercurtain', (158, 218, 229)),
+                ('toilet', (44, 160, 44)),
+                ('sink', (112, 128, 144)),
+                ('bathtub', (227, 119, 194)),
+                ('otherfurniture', (82, 84, 163)),
+            ])
 
 
-def make_coco_transforms(image_set):
+def make_transforms(image_set):
+    # Mean color, standard deviation (R, G, B)
+    color_mean = [0.485, 0.456, 0.406]
+    color_std = [0.229, 0.224, 0.225]
 
     normalize = T.Compose([
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        T.Normalize(color_mean, color_std)
     ])
 
-    scales = [(480, 640)]
+    scales = [(480, 640)]  # (h, w)
 
     if image_set == 'train':
         return T.Compose([
-            T.RandomHorizontalFlip(),
-            # T.RandomSelect(
             T.RandomResize(scales),
-            # T.Compose([
-            #     T.RandomResize([400, 500, 600]),
-            #     T.RandomSizeCrop(384, 600),
-            #     T.RandomResize(scales, max_size=1333),
-            # ])
-            # ),
             normalize,
         ])
 
     if image_set == 'val':
         return T.Compose([
-            T.RandomResize([(480, 640)]),
+            T.RandomResize(scales),
             normalize,
         ])
 
@@ -250,21 +239,12 @@ def make_coco_transforms(image_set):
 def build(image_set, args):
     root = Path(args.scannet_path)
     assert root.exists(), f'provided ScanNet path {root} does not exist'
-    # PATHS = {
-    #     "train": (root / "color", root / "depth", root / "intrinsic", root / "pose", root / "instance-filt", root / "scene0415_01_vh_clean.aggregation.json", root / "scannetv2-labels.combined.tsv"),
-    #     "val": (root / "color", root / "depth", root / "intrinsic", root / "pose", root / "instance-filt", root / "scene0415_01_vh_clean.aggregation.json", root / "scannetv2-labels.combined.tsv")
-    # }
+
     PATHS = {
-        "train": (root / "train.txt", root / "scannetv2-labels.combined.tsv"),
-        "val": (root / "val.txt", root / "scannetv2-labels.combined.tsv")
+        "train": (root / "train.txt", root / "scannet-labels.combined.tsv"),
+        "val": (root / "val.txt", root / "scannet-labels.combined.tsv")
     }
-
-    data_list, tsv_map = PATHS[image_set]
-    # image_folder, depth_folder, intrinsic_folder, pose_folder, mask_folder, label_json, tsv_map = PATHS[
-    #     image_set]
-    dataset = ScanNetDetection(root, data_list, tsv_map, transforms=make_coco_transforms(image_set),
-                               cache_mode=args.cache_mode, local_rank=get_local_rank(), local_size=get_local_size())
-    # dataset = ScanNetDetection(image_folder, depth_folder, intrinsic_folder, pose_folder, mask_folder, label_json, tsv_map, transforms=make_coco_transforms(image_set),
-    #                            cache_mode=args.cache_mode, local_rank=get_local_rank(), local_size=get_local_size())
-
+    scene_list, tsv_map = PATHS[image_set]
+    dataset = ScanNet(root, scene_list, tsv_map, mode=image_set, transforms=make_transforms(
+        image_set), loader=utils.scannet_loader, load_mode=args.load_mode, seg_classes=args.seg_classes, num_frames=args.num_frames)
     return dataset

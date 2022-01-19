@@ -10,41 +10,137 @@
 """
 Deformable DETR model and criterion classes.
 """
-from typing import Tuple, no_type_check
-from numpy.core.fromnumeric import shape
 import torch
-from torch._C import device
-from torch.functional import Tensor
 import torch.nn.functional as F
 from torch import nn
 import math
 
 from util import box_ops
-from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
-                       accuracy, get_world_size, interpolate,
-                       is_dist_avail_and_initialized, inverse_sigmoid)
+from util.misc import (
+    NestedTensor,
+    nested_tensor_from_tensor_list,
+    accuracy,
+    get_world_size,
+    interpolate,
+    is_dist_avail_and_initialized,
+    inverse_sigmoid,
+)
 
 from .backbone import build_backbone
 from .matcher import build_matcher
-from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
-                           MHAttentionMap, MaskHeadSmallConv,
-                           dice_loss, sigmoid_focal_loss)
+from .segmentation import (
+    DETRsegm,
+    PostProcessPanoptic,
+    PostProcessSegm,
+    MHAttentionMap,
+    MaskHeadSmallConv,
+    dice_loss,
+    sigmoid_focal_loss,
+)
 from .deformable_transformer import build_deforamble_transformer
 import copy
-from sys import executable, exit
-import numpy as np
-import cv2
+import torch.autograd.profiler as profiler
 
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 
+class InputProj(nn.Module):
+    """ This is the Input projection module for Deformable DETR """
+
+    def __init__(
+        self,
+        position_embedding,
+        num_feature_levels,
+        backbone_strides,
+        backbone_num_channels,
+        hidden_dim,
+    ):
+        super().__init__()
+        self.num_feature_levels = num_feature_levels
+        if num_feature_levels > 1:
+            num_backbone_outs = len(backbone_strides)
+            input_proj_list = []
+            for _ in range(num_backbone_outs):
+                in_channels = backbone_num_channels[_]
+                input_proj_list.append(
+                    nn.Sequential(
+                        nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
+                        nn.GroupNorm(32, hidden_dim),
+                    )
+                )
+            for _ in range(num_feature_levels - num_backbone_outs):
+                input_proj_list.append(
+                    nn.Sequential(
+                        nn.Conv2d(
+                            in_channels, hidden_dim, kernel_size=3, stride=2, padding=1
+                        ),
+                        nn.GroupNorm(32, hidden_dim),
+                    )
+                )
+                in_channels = hidden_dim
+            self.input_proj = nn.ModuleList(input_proj_list)
+        else:
+            self.input_proj = nn.ModuleList(
+                [
+                    nn.Sequential(
+                        nn.Conv2d(backbone_num_channels[0], hidden_dim, kernel_size=1),
+                        nn.GroupNorm(32, hidden_dim),
+                    )
+                ]
+            )
+        self.position_embedding = position_embedding
+
+        # initialize
+        for proj in self.input_proj:
+            nn.init.xavier_uniform_(proj[0].weight, gain=1)
+            nn.init.constant_(proj[0].bias, 0)
+
+    def forward(self, features: list, pos: list, sample_mask: torch.tensor):
+        srcs = []
+        masks = []
+        for l, feat in enumerate(features):
+            src, mask = feat.decompose()
+            srcs.append(self.input_proj[l](src))
+            masks.append(mask)
+            assert mask is not None
+        if self.num_feature_levels > len(srcs):
+            _len_srcs = len(srcs)
+            for l in range(_len_srcs, self.num_feature_levels):
+                if l == _len_srcs:
+                    src = self.input_proj[l](features[-1].tensors)
+                else:
+                    src = self.input_proj[l](srcs[-1])
+                m = sample_mask
+                mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(
+                    torch.bool
+                )[0]
+                pos_l = self.position_embedding(NestedTensor(src, mask)).to(src.dtype)
+                srcs.append(src)
+                masks.append(mask)
+                pos.append(pos_l)
+        out_pos = pos
+
+        return srcs, masks, out_pos
+
+
 class DeformableDETR(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
 
-    def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels, num_frames=3,
-                 aux_loss=True, with_box_refine=False, two_stage=False, masks=True):
+    def __init__(
+        self,
+        backbone,
+        transformer,
+        num_classes,
+        num_queries,
+        num_feature_levels,
+        num_frames=3,
+        aux_loss=True,
+        with_box_refine=False,
+        two_stage=False,
+        masks=True,
+    ):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -59,7 +155,6 @@ class DeformableDETR(nn.Module):
         super().__init__()
         self.num_queries = num_queries
         self.transformer = transformer
-        # TODO add new arg for num_frames
         self.num_frames = num_frames
         hidden_dim = transformer.d_model
         self.class_embed = nn.Linear(hidden_dim, num_classes)
@@ -67,31 +162,16 @@ class DeformableDETR(nn.Module):
         self.num_feature_levels = num_feature_levels
         if not two_stage:
             self.query_embed = nn.Embedding(
-                self.num_frames*num_queries, hidden_dim*2)
-        if num_feature_levels > 1:
-            num_backbone_outs = len(backbone.strides)
-            input_proj_list = []
-            for _ in range(num_backbone_outs):
-                in_channels = backbone.num_channels[_]
-                input_proj_list.append(nn.Sequential(
-                    nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
-                    nn.GroupNorm(32, hidden_dim),
-                ))
-            for _ in range(num_feature_levels - num_backbone_outs):
-                input_proj_list.append(nn.Sequential(
-                    nn.Conv2d(in_channels, hidden_dim,
-                              kernel_size=3, stride=2, padding=1),
-                    nn.GroupNorm(32, hidden_dim),
-                ))
-                in_channels = hidden_dim
-            self.input_proj = nn.ModuleList(input_proj_list)
-        else:
-            self.input_proj = nn.ModuleList([
-                nn.Sequential(
-                    nn.Conv2d(
-                        backbone.num_channels[0], hidden_dim, kernel_size=1),
-                    nn.GroupNorm(32, hidden_dim),
-                )])
+                self.num_frames * num_queries, hidden_dim * 2
+            )
+
+        self.input_proj = InputProj(
+            backbone[1],
+            num_feature_levels,
+            backbone.strides,
+            backbone.num_channels,
+            hidden_dim,
+        )
         self.backbone = backbone
         self.aux_loss = aux_loss
         self.with_box_refine = with_box_refine
@@ -102,42 +182,45 @@ class DeformableDETR(nn.Module):
         self.class_embed.bias.data = torch.ones(num_classes) * bias_value
         nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
         nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
-        for proj in self.input_proj:
-            nn.init.xavier_uniform_(proj[0].weight, gain=1)
-            nn.init.constant_(proj[0].bias, 0)
 
         # if two-stage, the last class_embed and bbox_embed is for region proposal generation
-        num_pred = (transformer.decoder.num_layers +
-                    1) if two_stage else transformer.decoder.num_layers
+        num_pred = (
+            (transformer.decoder.num_layers + 1)
+            if two_stage
+            else transformer.decoder.num_layers
+        )
         if with_box_refine:
             self.class_embed = _get_clones(self.class_embed, num_pred)
             self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
-            nn.init.constant_(
-                self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
+            nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
             # hack implementation for iterative bounding box refinement
             self.transformer.decoder.bbox_embed = self.bbox_embed
         else:
             nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0)
             self.class_embed = nn.ModuleList(
-                [self.class_embed for _ in range(num_pred)])
-            self.bbox_embed = nn.ModuleList(
-                [self.bbox_embed for _ in range(num_pred)])
+                [self.class_embed for _ in range(num_pred)]
+            )
+            self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
             self.transformer.decoder.bbox_embed = None
         if two_stage:
             # hack implementation for two-stage
             self.transformer.decoder.class_embed = self.class_embed
             for box_embed in self.bbox_embed:
                 nn.init.constant_(box_embed.layers[-1].bias.data[2:], 0.0)
+
         self.masks = masks
-        if self.masks:
+        if masks:
             nheads = transformer.nhead
-            self.bbox_attention = MHAttentionMap(hidden_dim, hidden_dim, nheads, dropout=0)
-            self.mask_head = MaskHeadSmallConv(hidden_dim + nheads, [2048, 1024, 512], hidden_dim, nheads)
+            self.bbox_attention = MHAttentionMap(
+                hidden_dim, hidden_dim, nheads, dropout=0.0
+            )
+            self.mask_head = MaskHeadSmallConv(
+                hidden_dim + nheads, [2048, 1024, 512], hidden_dim
+            )
 
-
-    def forward(self, samples: NestedTensor, coords: NestedTensor):
+    def forward(self, samples: NestedTensor):
         """ The forward expects a NestedTensor, which consists of:
-               - samples.tensor: batched images, of shape [batch_size x frames x 3 x H x W]
+               - samples.tensor: batched images, of shape [batch_size x frames x channels x H x W], channels depend on the load_mode
                - samples.mask: a binary mask of shape [batch_size x frames x H x W], containing 1 on padded pixels
 
             It returns a dict with the following elements:
@@ -152,46 +235,38 @@ class DeformableDETR(nn.Module):
         """
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
-
-
         features, pos = self.backbone(samples)
-        coords_feats, _ = self.backbone(coords)
-
-        srcs = []
-        masks = []
-        coords = []
-        for l, feat in enumerate(features):
-            src, mask = feat.decompose()
-            srcs.append(self.input_proj[l](src))
-            masks.append(mask)
-            assert mask is not None
-        for l, coord in enumerate(coords_feats):
-            src, _ = coord.decompose()
-            coords.append(self.input_proj[l](src))
-
-        if self.num_feature_levels > len(srcs):
-            _len_srcs = len(srcs)
-            for l in range(_len_srcs, self.num_feature_levels):
-                if l == _len_srcs:
-                    src = self.input_proj[l](features[-1].tensors)
-                    coord = self.input_proj[l](coords_feats[-1].tensors)
-                else:
-                    src = self.input_proj[l](srcs[-1])
-                    coord = self.input_proj[l](coords_feats[-1])
-                m = samples.mask
-                mask = F.interpolate(
-                    m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
-                pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
-                srcs.append(src)
-                masks.append(mask)
-                coords.append(coord)
-                pos.append(pos_l)
+        srcs, masks, pos = self.input_proj(features, pos, samples.mask)
         query_embeds = None
         if not self.two_stage:
             query_embeds = self.query_embed.weight
-        # hs shape: [decoder_layer, bs, querys*n_frames, features]
-        hs, memory, level_start_index, spatial_shapes, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(
-            srcs, masks, coords, pos, query_embeds)
+
+        for src in srcs:
+            print(src.shape)
+        exit()
+        
+        # transformer
+        (
+            hs,
+            memory,
+            level_start_index,
+            spatial_shapes,
+            init_reference,
+            inter_references,
+            enc_outputs_class,
+            enc_outputs_coord_unact,
+        ) = self.transformer(srcs, masks, pos, query_embeds)
+
+        """
+        {Shape summary}
+        * Length_{spatial}: images pixel flatten (times by num_frames)
+        * num_query: number of object queries
+        --------------------------------------------------
+        * hs: [num_decoder_layers, bs, num_query, c]
+        * memory: [bs, Length_{spatial}, c]
+        * init_reference: [bs, num_query, 3]
+        * inter_references: [num_decoder_layers, bs, num_query, 3]
+        """
 
         batch_size = hs.shape[1]
         outputs_classes = []
@@ -207,7 +282,6 @@ class DeformableDETR(nn.Module):
             if reference.shape[-1] == 4:
                 tmp += reference
             elif reference.shape[-1] == 3:
-                reference = reference.view(batch_size, -1, 3)
                 reference = reference[..., :2]
                 tmp[..., :2] += reference
             else:
@@ -219,54 +293,46 @@ class DeformableDETR(nn.Module):
         outputs_class = torch.stack(outputs_classes)
         outputs_coord = torch.stack(outputs_coords)
 
-
-        out = {'pred_logits': outputs_class[-1],
-               'pred_boxes': outputs_coord[-1]}
-        
-
+        bs_frames = batch_size * self.num_frames
+        out = {
+            "pred_logits": outputs_class[-1].reshape(bs_frames, self.num_queries, -1),
+            "pred_boxes": outputs_coord[-1].reshape(bs_frames, self.num_queries, -1),
+        }
         if self.aux_loss:
-            out['aux_outputs'] = self._set_aux_loss(
-                outputs_class, outputs_coord)
+            out["aux_outputs"] = self._set_aux_loss(outputs_class, outputs_coord)
 
         if self.two_stage:
             enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
-            out['enc_outputs'] = {
-                'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord}
-        
-        if self.masks:
-            hidden_dim = self.transformer.d_model
-            hs = hs.view(-1, batch_size, self.num_frames, self.num_queries, hidden_dim)
-            
-            level_start_index = level_start_index.tolist()
-            level_end_index = level_start_index[1:]
-            level_end_index.append(memory.shape[1])
+            out["enc_outputs"] = {
+                "pred_logits": enc_outputs_class,
+                "pred_boxes": enc_outputs_coord,
+            }
 
-            bbox_masks = [[] for _ in range(self.num_frames)]
-            for lvl, lvl_idx in enumerate(zip(level_start_index, level_end_index)):
-                seg_len = (lvl_idx[1] - lvl_idx[0]) / 3
-                mask = masks[lvl]
-                for f in range(self.num_frames):
-                    single_hs = hs[-1, :, f, :, :]
-                    start_idx = int(lvl_idx[0] + seg_len * f)
-                    end_idx = int(lvl_idx[0] + seg_len * (f + 1))
-                    single_memory = memory[:, start_idx:end_idx, :]
-                    single_memory = single_memory.permute(0, 2, 1).view(batch_size, hidden_dim, spatial_shapes[lvl][0], spatial_shapes[lvl][1])
-                    
-                    # bbox_mask shape: [batch size, num_query, num_heads, h, w]
-                    bbox_mask = self.bbox_attention(single_hs, single_memory, mask=mask[f, :, :]) 
-                    bbox_masks[f].append(bbox_mask)
-            # bbox_mask = torch.tensor(bbox_mask)
-            # print(bbox_mask.shape)
-            # bbox_mask list shape : n_frames x feature_layer x [bs , n_query, num_heads, h, w]
-            # src list shape : f_layer x [n_frames x bs, f_dim, h, w]
-            # feature list shape : f_layer x [n_frames x bs, f_dim, h, w]
-            # ask yc if this correct
-            bs = out['pred_logits'].shape[0]
-            # seg_masks shape : [n_frame x bs x num_queries, 1 , out_h, out_w]
-            seg_masks = self.mask_head(srcs, bbox_masks, [features[2].tensors, features[1].tensors, features[0].tensors], bs)
-            seg_masks = seg_masks.permute(1, 0, 2, 3, 4)
-            outputs_seg_masks = seg_masks.reshape(batch_size*self.num_frames, self.num_queries, seg_masks.shape[-2], seg_masks.shape[-1])
-            # out["pred_masks"] shape : [n_frame x bs, self.num_queries, out_h, out_w]
+        if self.masks:
+            # with profiler.record_function("Masks"):
+            channels = self.transformer.d_model
+            hs_last = hs[-1].reshape(bs_frames, -1, channels)
+            memory_last = memory[:, level_start_index[-1]:,
+                                :].reshape(bs_frames, spatial_shapes[-1, 0], spatial_shapes[-1, 1], channels).permute(0, 3, 1, 2)
+            mask_last = masks[-1]
+
+            # FIXME h_boxes takes the last one computed, keep this in mind
+            bbox_mask = self.bbox_attention(hs_last, memory_last, mask_last)
+            seg_masks = self.mask_head(
+                srcs[-1],
+                bbox_mask,
+                [features[2].tensors, features[1].tensors, features[0].tensors],
+            )
+
+            outputs_seg_masks = seg_masks.view(
+                bs_frames, self.num_queries, seg_masks.shape[-2], seg_masks.shape[-1]
+            )
+
+            """
+            {shape summary}
+            * outputs_seg_masks: [bs * n_frames, num_queries, original_h/8, original_w/8]
+            """
+
             out["pred_masks"] = outputs_seg_masks
 
         return out
@@ -276,8 +342,10 @@ class DeformableDETR(nn.Module):
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
-        return [{'pred_logits': a, 'pred_boxes': b}
-                for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
+        return [
+            {"pred_logits": a, "pred_boxes": b}
+            for a, b in zip(outputs_class[:-1], outputs_coord[:-1])
+        ]
 
 
 class SetCriterion(nn.Module):
@@ -287,7 +355,9 @@ class SetCriterion(nn.Module):
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
 
-    def __init__(self, num_classes, matcher, weight_dict, losses, focal_alpha=0.25, n_frames=3):
+    def __init__(
+        self, num_classes, matcher, weight_dict, losses, focal_alpha=0.25, n_frames=3
+    ):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -308,50 +378,46 @@ class SetCriterion(nn.Module):
         """Classification loss (NLL)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
         """
-        assert 'pred_logits' in outputs
-        src_logits = outputs['pred_logits']
+        assert "pred_logits" in outputs
 
+        src_logits = outputs["pred_logits"]
         idx = self._get_src_permutation_idx(indices)
+        target_classes_o = torch.cat(
+            [t["labels"][J] for t, (_, J) in zip(targets, indices)]
+        )
 
-        # we combine batch with frame and convert the tensor 
-        # into the shape of [bs x n_frames, n_query, 41]
-        new_shape_0 = src_logits.shape[0]*self.n_frames
-        new_shape_1 = src_logits.shape[1]//self.n_frames
-
-        target_classes_o = []
-        for i, target in enumerate(targets):
-            for j, t in enumerate(target):
-                _, J = indices[i*len(target)+j]
-                target_classes_o.append(t["labels"][J])
-
-        target_classes_o = torch.cat(target_classes_o)
-        # target_classes_o = torch.cat([t["labels"][J]
-        #                              for t, (_, J) in zip(targets, indices)])
-        target_classes = torch.full(src_logits.shape[:2], self.num_classes,
-                                    dtype=torch.int64, device=src_logits.device)
-        target_classes = target_classes.view(new_shape_0, -1)
-
+        target_classes = torch.full(
+            src_logits.shape[:2],
+            self.num_classes,
+            dtype=torch.int64,
+            device=src_logits.device,
+        )
         target_classes[idx] = target_classes_o
 
-
-        target_classes_onehot = torch.zeros([new_shape_0, new_shape_1, src_logits.shape[2] + 1],
-                                            dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
-
-
+        target_classes_onehot = torch.zeros(
+            [src_logits.shape[0], src_logits.shape[1], src_logits.shape[2] + 1],
+            dtype=src_logits.dtype,
+            layout=src_logits.layout,
+            device=src_logits.device,
+        )
         target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
-
         target_classes_onehot = target_classes_onehot[:, :, :-1]
 
-        src_logits = src_logits.view(new_shape_0, new_shape_1, -1)
-
-        loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot,
-                                     num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
-        losses = {'loss_ce': loss_ce}
+        loss_ce = (
+            sigmoid_focal_loss(
+                src_logits,
+                target_classes_onehot,
+                num_boxes,
+                alpha=self.focal_alpha,
+                gamma=2,
+            )
+            * src_logits.shape[1]
+        )
+        losses = {"loss_ce": loss_ce}
 
         if log:
             # TODO this should probably be a separate loss, not hacked in this one here
-            losses['class_error'] = 100 - \
-                accuracy(src_logits[idx], target_classes_o)[0]
+            losses["class_error"] = 100 - accuracy(src_logits[idx], target_classes_o)[0]
         return losses
 
     @torch.no_grad()
@@ -359,21 +425,15 @@ class SetCriterion(nn.Module):
         """ Compute the cardinality error, ie the absolute error in the number of predicted non-empty boxes
         This is not really a loss, it is intended for logging purposes only. It doesn't propagate gradients
         """
-        pred_logits = outputs['pred_logits']
-        new_shape_0 = pred_logits.shape[0]*self.n_frames
-        new_shape_1 = pred_logits.shape[1]//self.n_frames
-        pred_logits = pred_logits.view(new_shape_0, new_shape_1, -1)
+        pred_logits = outputs["pred_logits"]
         device = pred_logits.device
-        tgt_lengths = []
-        for target in targets:
-            for t in target:
-                tgt_lengths.append(len(t["labels"]))
-        tgt_lengths = torch.as_tensor(tgt_lengths, device=device)
+        tgt_lengths = torch.as_tensor(
+            [len(v["labels"]) for v in targets], device=device
+        )
         # Count the number of predictions that are NOT "no-object" (which is the last class)
-        card_pred = (pred_logits.argmax(-1) !=
-                     pred_logits.shape[-1] - 1).sum(1)
+        card_pred = (pred_logits.argmax(-1) != pred_logits.shape[-1] - 1).sum(1)
         card_err = F.l1_loss(card_pred.float(), tgt_lengths.float())
-        losses = {'cardinality_error': card_err}
+        losses = {"cardinality_error": card_err}
         return losses
 
     def loss_boxes(self, outputs, targets, indices, num_boxes):
@@ -381,35 +441,28 @@ class SetCriterion(nn.Module):
            targets dicts must contain the key "boxes" containing a tensor of dim [nb_target_boxes, 4]
            The target boxes are expected in format (center_x, center_y, h, w), normalized by the image size.
         """
-        assert 'pred_boxes' in outputs
-
-        # we combine batch with frame and convert the tensor 
-        # into the shape of [bs x n_frames, n_query, 41]
-        src_boxes = outputs['pred_boxes']
-        new_shape_0 = src_boxes.shape[0]*self.n_frames
-        new_shape_1 = src_boxes.shape[1]//self.n_frames
-        src_boxes = outputs['pred_boxes'].view(new_shape_0, new_shape_1, -1)
+        assert "pred_boxes" in outputs
 
         idx = self._get_src_permutation_idx(indices)
-
+        src_boxes = outputs["pred_boxes"]
         src_boxes = src_boxes[idx]
+        target_boxes = torch.cat(
+            [t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0
+        )
 
-        target_boxes = []
-        for i, target in enumerate(targets):
-            for j, t in enumerate(target):
-                _, I = indices[i*len(target)+j]
-                target_boxes.append(t["boxes"][I])
-        target_boxes = torch.cat(target_boxes, dim=0)
-        
-        loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction='none')
+        loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction="none")
 
         losses = {}
-        losses['loss_bbox'] = loss_bbox.sum() / num_boxes
+        losses["loss_bbox"] = loss_bbox.sum() / num_boxes
 
-        loss_giou = 1 - torch.diag(box_ops.generalized_box_iou(
-            box_ops.box_cxcywh_to_xyxy(src_boxes),
-            box_ops.box_cxcywh_to_xyxy(target_boxes)))
-        losses['loss_giou'] = loss_giou.sum() / num_boxes
+        loss_giou = 1 - torch.diag(
+            box_ops.generalized_box_iou(
+                box_ops.box_cxcywh_to_xyxy(src_boxes),
+                box_ops.box_cxcywh_to_xyxy(target_boxes),
+            )
+        )
+        losses["loss_giou"] = loss_giou.sum() / num_boxes
+
         return losses
 
     def loss_masks(self, outputs, targets, indices, num_boxes):
@@ -424,70 +477,54 @@ class SetCriterion(nn.Module):
         src_masks = outputs["pred_masks"]
 
         # TODO use valid to mask invalid areas due to padding in loss
-        targets_masks = []
-        for i, target in enumerate(targets):
-            for j, t in enumerate(target):
-                _, I = indices[i*len(target)+j]
-                targets_masks.append(t["masks"][I])
-        # target_masks, valid = nested_tensor_from_tensor_list(
-        #     [t["masks"] for t in targets]).decompose()
+        target_masks, valid = nested_tensor_from_tensor_list(
+            [t["masks"] for t in targets]
+        ).decompose()
+        target_masks = target_masks.to(src_masks)
 
-        targets_masks, valid = nested_tensor_from_tensor_list(targets_masks).decompose()
-        # for i in range(6):
-        #     for k in range(9):
-        #         viz = np.array(targets_masks[i][k].cpu(), dtype=np.float)*200
-        #         cv2.imshow("test",viz)
-        #         cv2.waitKey(0)
-        #         cv2.destroyAllWindows()
-        target_masks = targets_masks.to(src_masks)
         src_masks = src_masks[src_idx]
         # upsample predictions to the target size
-        src_masks = interpolate(src_masks[:, None], size=target_masks.shape[-2:],
-                                mode="bilinear", align_corners=False)
+        src_masks = interpolate(
+            src_masks[:, None],
+            size=target_masks.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
 
-        # src_masks = src_masks[:, 0].flatten(1)
-        src_masks = src_masks[:, 0]
-        # src_masks_show = src_masks.clone().detach()
-        # for i in range(2):
-        #         viz = src_masks_show[i].cpu().numpy()
-        #         cv2.imshow("test",viz)
-        #         cv2.waitKey(0)
-        #         cv2.destroyAllWindows()
-        src_masks = src_masks.flatten(1)
+        src_masks = src_masks[:, 0].flatten(1)
 
         target_masks = target_masks[tgt_idx].flatten(1)
-
-
 
         losses = {
             "loss_mask": sigmoid_focal_loss(src_masks, target_masks, num_boxes),
             "loss_dice": dice_loss(src_masks, target_masks, num_boxes),
         }
-
         return losses
 
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
-        batch_idx = torch.cat([torch.full_like(src, i)
-                              for i, (src, _) in enumerate(indices)])
+        batch_idx = torch.cat(
+            [torch.full_like(src, i) for i, (src, _) in enumerate(indices)]
+        )
         src_idx = torch.cat([src for (src, _) in indices])
         return batch_idx, src_idx
 
     def _get_tgt_permutation_idx(self, indices):
         # permute targets following indices
-        batch_idx = torch.cat([torch.full_like(tgt, i)
-                              for i, (_, tgt) in enumerate(indices)])
+        batch_idx = torch.cat(
+            [torch.full_like(tgt, i) for i, (_, tgt) in enumerate(indices)]
+        )
         tgt_idx = torch.cat([tgt for (_, tgt) in indices])
         return batch_idx, tgt_idx
 
     def get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
         loss_map = {
-            'labels': self.loss_labels,
-            'cardinality': self.loss_cardinality,
-            'boxes': self.loss_boxes,
-            'masks': self.loss_masks
+            "labels": self.loss_labels,
+            "cardinality": self.loss_cardinality,
+            "boxes": self.loss_boxes,
+            "masks": self.loss_masks,
         }
-        assert loss in loss_map, f'do you really want to compute {loss} loss?'
+        assert loss in loss_map, f"do you really want to compute {loss} loss?"
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
     def forward(self, outputs, targets):
@@ -497,66 +534,68 @@ class SetCriterion(nn.Module):
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
-        outputs_without_aux = {k: v for k, v in outputs.items(
-        ) if k != 'aux_outputs' and k != 'enc_outputs'}
+        outputs_without_aux = {
+            k: v
+            for k, v in outputs.items()
+            if k != "aux_outputs" and k != "enc_outputs"
+        }
 
         # Retrieve the matching between the outputs of the last layer and the targets
-        indices = self.matcher(outputs_without_aux, targets, self.n_frames)
+        indices = self.matcher(outputs_without_aux, targets)
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
-        num_boxes = 0
-        for target in targets:
-            for t in target:
-                num_boxes += len(t["labels"])
-
+        num_boxes = sum(len(t["labels"]) for t in targets)
         num_boxes = torch.as_tensor(
-            [num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
+            [num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device
+        )
         if is_dist_avail_and_initialized():
             torch.distributed.all_reduce(num_boxes)
-
         num_boxes = torch.clamp(num_boxes / get_world_size(), min=1).item()
 
         # Compute all the requested losses
         losses = {}
         for loss in self.losses:
             kwargs = {}
-            losses.update(self.get_loss(loss, outputs, targets,
-                          indices, num_boxes, **kwargs))
+            losses.update(
+                self.get_loss(loss, outputs, targets, indices, num_boxes, **kwargs)
+            )
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
-        if 'aux_outputs' in outputs:
-            for i, aux_outputs in enumerate(outputs['aux_outputs']):
+        if "aux_outputs" in outputs:
+            for i, aux_outputs in enumerate(outputs["aux_outputs"]):
                 indices = self.matcher(aux_outputs, targets, self.n_frames)
                 for loss in self.losses:
-                    if loss == 'masks':
+                    if loss == "masks":
                         # Intermediate masks losses are too costly to compute, we ignore them.
                         continue
                     kwargs = {}
-                    if loss == 'labels':
+                    if loss == "labels":
                         # Logging is enabled only for the last layer
-                        kwargs['log'] = False
+                        kwargs["log"] = False
                     l_dict = self.get_loss(
-                        loss, aux_outputs, targets, indices, num_boxes, **kwargs)
-                    l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
+                        loss, aux_outputs, targets, indices, num_boxes, **kwargs
+                    )
+                    l_dict = {k + f"_{i}": v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
-        if 'enc_outputs' in outputs:
-            enc_outputs = outputs['enc_outputs']
+        if "enc_outputs" in outputs:
+            enc_outputs = outputs["enc_outputs"]
             bin_targets = copy.deepcopy(targets)
             for bt in bin_targets:
-                bt['labels'] = torch.zeros_like(bt['labels'])
+                bt["labels"] = torch.zeros_like(bt["labels"])
             indices = self.matcher(enc_outputs, bin_targets)
             for loss in self.losses:
-                if loss == 'masks':
+                if loss == "masks":
                     # Intermediate masks losses are too costly to compute, we ignore them.
                     continue
                 kwargs = {}
-                if loss == 'labels':
+                if loss == "labels":
                     # Logging is enabled only for the last layer
-                    kwargs['log'] = False
+                    kwargs["log"] = False
                 l_dict = self.get_loss(
-                    loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
-                l_dict = {k + f'_enc': v for k, v in l_dict.items()}
+                    loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs
+                )
+                l_dict = {k + f"_enc": v for k, v in l_dict.items()}
                 losses.update(l_dict)
 
         return losses
@@ -574,29 +613,27 @@ class PostProcess(nn.Module):
                           For evaluation, this must be the original image size (before any data augmentation)
                           For visualization, this should be the image size after data augment, but before padding
         """
-        out_logits, out_bbox = outputs['pred_logits'], outputs['pred_boxes']
-        n_frames = target_sizes.shape[0] // out_logits.shape[0]
-        out_logits = out_logits.view(out_logits.shape[0] * n_frames, -1, out_logits.shape[-1])
-        out_bbox = out_bbox.view(out_bbox.shape[0] * n_frames, -1, out_bbox.shape[-1])
+        out_logits, out_bbox = outputs["pred_logits"], outputs["pred_boxes"]
+
         assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
-        prob = out_logits.sigmoid()
-        topk_values, topk_indexes = torch.topk(
-            prob.view(out_logits.shape[0], -1), 100, dim=1)
-        scores = topk_values
-        topk_boxes = topk_indexes // out_logits.shape[2]
-        labels = topk_indexes % out_logits.shape[2]
-        boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
-        boxes = torch.gather(
-            boxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))
-        # and from relative [0, 1] to absolute [0, height] coordinates
+        prob = F.softmax(out_logits, -1)
+        scores, labels = prob.max(-1)
 
+        # convert to [x0, y0, x1, y1] format
+        boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
+
+        # and from relative [0, 1] to absolute [0, height] coordinates
         img_h, img_w = target_sizes.unbind(1)
         scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)
         boxes = boxes * scale_fct[:, None, :]
-        results = [{'scores': s, 'labels': l, 'boxes': b}
-                   for s, l, b in zip(scores, labels, boxes)]
+
+        results = [
+            {"scores": s, "labels": l, "boxes": b}
+            for s, l, b in zip(scores, labels, boxes)
+        ]
+
         return results
 
 
@@ -607,8 +644,9 @@ class MLP(nn.Module):
         super().__init__()
         self.num_layers = num_layers
         h = [hidden_dim] * (num_layers - 1)
-        self.layers = nn.ModuleList(nn.Linear(n, k)
-                                    for n, k in zip([input_dim] + h, h + [output_dim]))
+        self.layers = nn.ModuleList(
+            nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim])
+        )
 
     def forward(self, x):
         for i, layer in enumerate(self.layers):
@@ -617,8 +655,8 @@ class MLP(nn.Module):
 
 
 def build(args):
-    num_classes = 20 if args.dataset_file != 'coco' else 91
-    if args.dataset_file == 'ScanNet':
+    num_classes = 20 if args.dataset_file != "coco" else 91
+    if args.dataset_file == "ScanNet":
         num_classes = 41
     device = torch.device(args.device)
 
@@ -634,14 +672,14 @@ def build(args):
         aux_loss=args.aux_loss,
         with_box_refine=args.with_box_refine,
         two_stage=args.two_stage,
-        masks=args.masks
+        masks=args.masks,
+        num_frames=args.num_frames,
     )
     # if args.masks:
     #     model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
     matcher = build_matcher(args)
-    weight_dict = {'loss_ce': args.cls_loss_coef,
-                   'loss_bbox': args.bbox_loss_coef}
-    weight_dict['loss_giou'] = args.giou_loss_coef
+    weight_dict = {"loss_ce": args.cls_loss_coef, "loss_bbox": args.bbox_loss_coef}
+    weight_dict["loss_giou"] = args.giou_loss_coef
     if args.masks:
         weight_dict["loss_mask"] = args.mask_loss_coef
         weight_dict["loss_dice"] = args.dice_loss_coef
@@ -649,25 +687,31 @@ def build(args):
     if args.aux_loss:
         aux_weight_dict = {}
         for i in range(args.dec_layers - 1):
-            aux_weight_dict.update(
-                {k + f'_{i}': v for k, v in weight_dict.items()})
-        aux_weight_dict.update(
-            {k + f'_enc': v for k, v in weight_dict.items()})
+            aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
+        aux_weight_dict.update({k + f"_enc": v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
 
-    losses = ['labels', 'boxes', 'cardinality', 'masks']
-    # if args.masks:
-    #     losses += ["masks"]
-    # num_classes, matcher, weight_dict, losses, focal_alpha=0.25
-    criterion = SetCriterion(num_classes, matcher,
-                             weight_dict, losses, focal_alpha=args.focal_alpha)
-    criterion.to(device)
-    postprocessors = {'bbox': PostProcess()}
+    losses = ["labels", "boxes", "cardinality"]
     if args.masks:
-        postprocessors['segm'] = PostProcessSegm()
+        losses += ["masks"]
+    # num_classes, matcher, weight_dict, losses, focal_alpha=0.25
+
+    criterion = SetCriterion(
+        num_classes,
+        matcher,
+        weight_dict,
+        losses,
+        focal_alpha=args.focal_alpha,
+        n_frames=args.num_frames,
+    )
+    criterion.to(device)
+    postprocessors = {"bbox": PostProcess()}
+    if args.masks:
+        postprocessors["segm"] = PostProcessSegm()
         if args.dataset_file == "coco_panoptic":
             is_thing_map = {i: i <= 90 for i in range(201)}
             postprocessors["panoptic"] = PostProcessPanoptic(
-                is_thing_map, threshold=0.85)
+                is_thing_map, threshold=0.85
+            )
 
     return model, criterion, postprocessors

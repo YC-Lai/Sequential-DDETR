@@ -16,7 +16,7 @@ from torchvision.ops.boxes import box_area
 
 def box_cxcywh_to_xyxy(x):
     x_c, y_c, w, h = x.unbind(-1)
-    assert torch.all(w>=0), print(w)
+    assert torch.all(w>=0)
     assert torch.all(h>=0)
     b = [(x_c - 0.5 * w), (y_c - 0.5 * h),
          (x_c + 0.5 * w), (y_c + 0.5 * h)]

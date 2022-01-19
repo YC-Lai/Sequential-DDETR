@@ -12,10 +12,12 @@ This file provides the definition of the convolutional heads used to predict mas
 """
 import io
 from collections import defaultdict
+from typing import List, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import Tensor
 from PIL import Image
 
 import util.box_ops as box_ops
@@ -69,29 +71,32 @@ class DETRsegm(nn.Module):
         return out
 
 
+def _expand(tensor, length: int):
+    return tensor.unsqueeze(1).repeat(1, int(length), 1, 1, 1).flatten(0, 1)
+
+
 class MaskHeadSmallConv(nn.Module):
     """
     Simple convolutional head, using group norm.
     Upsampling is done using a FPN approach
     """
 
-    def __init__(self, dim, fpn_dims, context_dim, n_heads):
+    def __init__(self, dim, fpn_dims, context_dim):
         super().__init__()
 
-        inter_dims = [dim, context_dim // 2 , context_dim // 4 , context_dim // 8 , context_dim // 16 , context_dim // 64]
+        inter_dims = [dim, context_dim // 2, context_dim // 4, context_dim // 8, context_dim // 16, context_dim // 64]
         self.lay1 = torch.nn.Conv2d(dim, dim, 3, padding=1)
         self.gn1 = torch.nn.GroupNorm(8, dim)
         self.lay2 = torch.nn.Conv2d(dim, inter_dims[1], 3, padding=1)
         self.gn2 = torch.nn.GroupNorm(8, inter_dims[1])
-        self.lay3 = torch.nn.Conv2d(inter_dims[1] + n_heads, inter_dims[2], 3, padding=1)
+        self.lay3 = torch.nn.Conv2d(inter_dims[1], inter_dims[2], 3, padding=1)
         self.gn3 = torch.nn.GroupNorm(8, inter_dims[2])
-        self.lay4 = torch.nn.Conv2d(inter_dims[2] + n_heads, inter_dims[3], 3, padding=1)
+        self.lay4 = torch.nn.Conv2d(inter_dims[2], inter_dims[3], 3, padding=1)
         self.gn4 = torch.nn.GroupNorm(8, inter_dims[3])
-        self.lay5 = torch.nn.Conv2d(inter_dims[3] + n_heads, inter_dims[4], 3, padding=1)
+        self.lay5 = torch.nn.Conv2d(inter_dims[3], inter_dims[4], 3, padding=1)
         self.gn5 = torch.nn.GroupNorm(8, inter_dims[4])
         self.out_lay = torch.nn.Conv2d(inter_dims[4], 1, 3, padding=1)
-        print(inter_dims[4])
-        print(inter_dims[3])
+
         self.dim = dim
 
         self.adapter1 = torch.nn.Conv2d(fpn_dims[0], inter_dims[1], 1)
@@ -103,66 +108,42 @@ class MaskHeadSmallConv(nn.Module):
                 nn.init.kaiming_uniform_(m.weight, a=1)
                 nn.init.constant_(m.bias, 0)
 
-    def forward(self, x, bbox_mask, fpns, batch_size):
-        def expand(tensor, length):
-            return tensor.unsqueeze(1).repeat(1, int(length), 1, 1, 1).flatten(0, 1)
-        # iterate through each frame in num_frames
-        num_frame = len(bbox_mask)
-        x_frames = []
-        for frame_i in range(num_frame):
+    def forward(self, x: Tensor, bbox_mask: Tensor, fpns: List[Tensor]):
+        x = torch.cat([_expand(x, bbox_mask.shape[1]), bbox_mask.flatten(0, 1)], 1)
 
-            # get some tensor dim info
-            feature_layer_level = len(x)-1
-            num_q = x[feature_layer_level].shape[-3]
-            h = x[feature_layer_level].shape[-2]
-            w = x[feature_layer_level].shape[-1]
+        x = self.lay1(x)
+        x = self.gn1(x)
+        x = F.relu(x)
+        x = self.lay2(x)
+        x = self.gn2(x)
+        x = F.relu(x)
 
-            # prepare level one data
-            x_per_frame_l1 = x[feature_layer_level].view(batch_size, num_frame, num_q, h, w).transpose(0, 1)
-            x_per_frame_l1 = torch.cat([expand(x_per_frame_l1[frame_i], bbox_mask[frame_i][feature_layer_level].shape[1]), bbox_mask[frame_i][feature_layer_level].flatten(0, 1)], 1)
+        cur_fpn = self.adapter1(fpns[0])
+        if cur_fpn.size(0) != x.size(0):
+            cur_fpn = _expand(cur_fpn, x.size(0) // cur_fpn.size(0))
+        x = cur_fpn + F.interpolate(x, size=cur_fpn.shape[-2:], mode="nearest")
+        x = self.lay3(x)
+        x = self.gn3(x)
+        x = F.relu(x)
 
-            x_per_frame_l1 = self.lay1(x_per_frame_l1)
-            x_per_frame_l1 = self.gn1(x_per_frame_l1)
-            x_per_frame_l1 = F.relu(x_per_frame_l1)
-            x_per_frame_l1 = self.lay2(x_per_frame_l1)
-            x_per_frame_l1 = self.gn2(x_per_frame_l1)
-            x_per_frame_l1 = F.relu(x_per_frame_l1)
+        cur_fpn = self.adapter2(fpns[1])
+        if cur_fpn.size(0) != x.size(0):
+            cur_fpn = _expand(cur_fpn, x.size(0) // cur_fpn.size(0))
+        x = cur_fpn + F.interpolate(x, size=cur_fpn.shape[-2:], mode="nearest")
+        x = self.lay4(x)
+        x = self.gn4(x)
+        x = F.relu(x)
 
-            feature_layer_level -= 1
-            cur_fpn = self.adapter1(fpns[0])
-            if cur_fpn.size(0) != x_per_frame_l1.size(0):
-                cur_fpn = expand(cur_fpn, x_per_frame_l1.size(0) / cur_fpn.size(0))
-            x_per_frame_l2 = cur_fpn + F.interpolate(x_per_frame_l1, size=cur_fpn.shape[-2:], mode="nearest")
-            x_per_frame_l2 = torch.cat([x_per_frame_l2,  bbox_mask[frame_i][feature_layer_level].flatten(0, 1)], 1)
-            x_per_frame_l2 = self.lay3(x_per_frame_l2)
-            x_per_frame_l2 = self.gn3(x_per_frame_l2)
-            x_per_frame_l2 = F.relu(x_per_frame_l2)
+        cur_fpn = self.adapter3(fpns[2])
+        if cur_fpn.size(0) != x.size(0):
+            cur_fpn = _expand(cur_fpn, x.size(0) // cur_fpn.size(0))
+        x = cur_fpn + F.interpolate(x, size=cur_fpn.shape[-2:], mode="nearest")
+        x = self.lay5(x)
+        x = self.gn5(x)
+        x = F.relu(x)
 
-            feature_layer_level -= 1
-            cur_fpn = self.adapter2(fpns[1])
-            if cur_fpn.size(0) != x_per_frame_l2.size(0):
-                cur_fpn = expand(cur_fpn, x_per_frame_l2.size(0) / cur_fpn.size(0))
-            x_per_frame_l3 = cur_fpn + F.interpolate(x_per_frame_l2, size=cur_fpn.shape[-2:], mode="nearest")
-            x_per_frame_l3 = torch.cat([x_per_frame_l3,  bbox_mask[frame_i][feature_layer_level].flatten(0, 1)], 1)
-            x_per_frame_l3 = self.lay4(x_per_frame_l3)
-            x_per_frame_l3 = self.gn4(x_per_frame_l3)
-            x_per_frame_l3 = F.relu(x_per_frame_l3)
-
-            feature_layer_level -= 1
-            cur_fpn = self.adapter3(fpns[2])
-            if cur_fpn.size(0) != x_per_frame_l3.size(0):
-                cur_fpn = expand(cur_fpn, x_per_frame_l3.size(0) / cur_fpn.size(0))
-            x_per_frame_l4 = cur_fpn + F.interpolate(x_per_frame_l3, size=cur_fpn.shape[-2:], mode="nearest")
-            x_per_frame_l4 = torch.cat([x_per_frame_l4,  bbox_mask[frame_i][feature_layer_level].flatten(0, 1)], 1)
-            x_per_frame_l4 = self.lay5(x_per_frame_l4)
-            x_per_frame_l4 = self.gn5(x_per_frame_l4)
-            x_per_frame_l4 = F.relu(x_per_frame_l4)
-
-            x_per_frame_l4 = self.out_lay(x_per_frame_l4)
-
-            x_frames.append(x_per_frame_l4.view(batch_size, -1, x_per_frame_l4.shape[-2], x_per_frame_l4.shape[-1]))
-            
-        return torch.stack(x_frames, 0)
+        x = self.out_lay(x)
+        return x
 
 
 class MHAttentionMap(nn.Module):
@@ -185,7 +166,7 @@ class MHAttentionMap(nn.Module):
 
     def forward(self, q, k, mask=None):
         '''
-        :param q                       (bs, n_query=300, d_model)
+        :param q                       (bs, n_query, d_model)
         :param k                       (bs, d_model, h, w)
         :param mask                    (h, w)
         '''
@@ -193,10 +174,9 @@ class MHAttentionMap(nn.Module):
         k = F.conv2d(k, self.k_linear.weight.unsqueeze(-1).unsqueeze(-1), self.k_linear.bias)
         qh = q.view(q.shape[0], q.shape[1], self.num_heads, self.hidden_dim // self.num_heads)
         kh = k.view(k.shape[0], self.num_heads, self.hidden_dim // self.num_heads, k.shape[-2], k.shape[-1])
-        # weights: [bs, n_query=300, n_heads, height, width]
         weights = torch.einsum("bqnc,bnchw->bqnhw", qh * self.normalize_fact, kh)
         if mask is not None:
-            weights.masked_fill_(mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+            weights.masked_fill_(mask.unsqueeze(1).unsqueeze(1), float("-inf"))
         weights = F.softmax(weights.flatten(2), dim=-1).view_as(weights)
         weights = self.dropout(weights)
         return weights
@@ -220,7 +200,7 @@ def dice_loss(inputs, targets, num_boxes):
     return loss.sum() / num_boxes
 
 
-def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.9, gamma: float = 10):
+def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: float = 2):
     """
     Loss used in RetinaNet for dense detection: https://arxiv.org/abs/1708.02002.
     Args:
@@ -254,21 +234,14 @@ class PostProcessSegm(nn.Module):
         self.threshold = threshold
 
     @torch.no_grad()
-    def forward(self, results, outputs, orig_target_sizes, max_target_sizes):
-        assert len(orig_target_sizes) == len(max_target_sizes)
-        max_h, max_w = max_target_sizes.max(0)[0].tolist()
-        outputs_masks = outputs["pred_masks"]
-        outputs_masks = F.interpolate(outputs_masks, size=(max_h, max_w), mode="bilinear", align_corners=False)
-        # outputs_masks = (outputs_masks.sigmoid() > self.threshold).cpu()
-        outputs_masks, _ = torch.topk(outputs_masks.sigmoid(), 100, dim=1)
-        outputs_masks = (outputs_masks > self.threshold).cpu()
-        # print("outputs_masks shape {}".format(outputs_masks.shape))
-        for i, (cur_mask, t, tt) in enumerate(zip(outputs_masks, max_target_sizes, orig_target_sizes)):
-            img_h, img_w = t[0], t[1]
-            results[i]["masks"] = cur_mask[:, :img_h, :img_w].unsqueeze(1)
-            results[i]["masks"] = F.interpolate(
-                results[i]["masks"].float(), size=tuple(tt.tolist()), mode="nearest"
-            ).byte()
+    def forward(self, results, outputs, orig_target_size):
+        orig_h, orig_w = orig_target_size
+        outputs_masks = outputs["pred_masks"].squeeze(2)
+        outputs_masks = F.interpolate(outputs_masks, size=(orig_h, orig_w), mode="bilinear", align_corners=False)
+        outputs_masks = (outputs_masks.sigmoid() > self.threshold).cpu().unsqueeze(2)
+
+        for i, cur_mask in enumerate(outputs_masks):
+            results[i]["masks"] = cur_mask
 
         return results
 

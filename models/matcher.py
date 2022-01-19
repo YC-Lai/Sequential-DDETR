@@ -10,7 +10,6 @@
 """
 Modules to compute the matching cost and solve the corresponding LSAP.
 """
-from numpy.core.fromnumeric import size
 import torch
 from scipy.optimize import linear_sum_assignment
 from torch import nn
@@ -26,10 +25,7 @@ class HungarianMatcher(nn.Module):
     while the others are un-matched (and thus treated as non-objects).
     """
 
-    def __init__(self,
-                 cost_class: float = 1,
-                 cost_bbox: float = 1,
-                 cost_giou: float = 1):
+    def __init__(self, cost_class: float = 1, cost_bbox: float = 1, cost_giou: float = 1):
         """Creates the matcher
 
         Params:
@@ -43,13 +39,15 @@ class HungarianMatcher(nn.Module):
         self.cost_giou = cost_giou
         assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, "all costs cant be 0"
 
-    def forward(self, outputs, targets, n_frames):
+    @torch.no_grad()
+    def forward(self, outputs, targets):
         """ Performs the matching
 
         Params:
             outputs: This is a dict that contains at least these entries:
-                 "pred_logits": Tensor of dim [batch_size, num_queries*n_frames, num_classes] with the classification logits
-                 "pred_boxes": Tensor of dim [batch_size, num_queries*n_framse, 4] with the predicted box coordinates
+                 "pred_logits": Tensor of dim [bs_frames, num_queries, num_classes] with the classification logits
+                 "pred_boxes": Tensor of dim [bs_frames, num_queries, 4] with the predicted box coordinates
+                 * bs_frames = batch_size * n_frames
 
             targets: This is a list of list of targets (len(targets) = batch_size*n_frames), where each target is a dict containing:
                  "labels": Tensor of dim [num_target_boxes] (where num_target_boxes is the number of ground-truth
@@ -64,59 +62,38 @@ class HungarianMatcher(nn.Module):
             For each batch element, it holds:
                 len(index_i) = len(index_j) = min(num_queries, num_target_boxes)
         """
-        with torch.no_grad():
-            bs, num_queries = outputs["pred_logits"].shape[:2]
-            # We flatten to compute the cost matrices in a batch
-            out_prob = outputs["pred_logits"].flatten(0, 1).sigmoid()
-            out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [batch_size * num_queries, 4]
-            # Also concat the target labels and boxes
-            tgt_ids = []
-            tgt_bbox = []
-            for target in targets:
-                for v in target:
-                    tgt_ids.append(v["labels"])
-                    tgt_bbox.append(v["boxes"])
-            tgt_ids = torch.cat(tgt_ids)
-            tgt_bbox = torch.cat(tgt_bbox)
+        bs_frames, num_queries = outputs["pred_logits"].shape[:2]
 
-            # Compute the classification cost.
-            alpha = 0.25
-            gamma = 2.0
-            neg_cost_class = (1 - alpha) * (out_prob ** gamma) * (-(1 - out_prob + 1e-8).log())
-            pos_cost_class = alpha * ((1 - out_prob) ** gamma) * (-(out_prob + 1e-8).log())
+        # We flatten to compute the cost matrices in a batch
+        out_prob = outputs["pred_logits"].flatten(0, 1).sigmoid()  # [bs_frames * num_queries, num_classes]
+        out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [bs_frames * num_queries, 4]
 
-            
-            cost_class = pos_cost_class[:, tgt_ids] - neg_cost_class[:, tgt_ids]
+        # Also concat the target labels and boxes
+        tgt_ids = torch.cat([v["labels"] for v in targets])
+        tgt_bbox = torch.cat([v["boxes"] for v in targets])
 
+        # Compute the classification cost.
+        alpha = 0.25
+        gamma = 2.0
+        neg_cost_class = (1 - alpha) * (out_prob ** gamma) * (-(1 - out_prob + 1e-8).log())
+        pos_cost_class = alpha * ((1 - out_prob) ** gamma) * (-(out_prob + 1e-8).log())
+        cost_class = pos_cost_class[:, tgt_ids] - neg_cost_class[:, tgt_ids]
 
+        # Compute the L1 cost between boxes
+        cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
 
-            # Compute the L1 cost between boxes
-            cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
+        # Compute the giou cost betwen boxes
+        cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(out_bbox), box_cxcywh_to_xyxy(tgt_bbox))
 
-            # Compute the giou cost betwen boxes
-            cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(out_bbox),
-                                             box_cxcywh_to_xyxy(tgt_bbox))
+        # Final cost matrix
+        C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
+        C = C.view(bs_frames, num_queries, -1).cpu()
 
-            # Final cost matrix
-            C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
-            C = C.view(bs*n_frames, num_queries//n_frames, -1).cpu()
+        sizes = [len(v["boxes"]) for v in targets]
+        indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
 
-            # sizes = [len(v["boxes"]) for v in targets]
-            sizes = []
-            for target in targets:
-                for v in target:
-                    sizes.append(len(v["boxes"]))
-
-            # print(C.shape)
-            # print(C.split(sizes, -1)[0].shape)
-            # exit()
-
-            indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
-
-            return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
+        return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
 
 
 def build_matcher(args):
-    return HungarianMatcher(cost_class=args.set_cost_class,
-                            cost_bbox=args.set_cost_bbox,
-                            cost_giou=args.set_cost_giou)
+    return HungarianMatcher(cost_class=args.set_cost_class, cost_bbox=args.set_cost_bbox, cost_giou=args.set_cost_giou)

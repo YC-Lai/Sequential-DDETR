@@ -1,9 +1,10 @@
 # ------------------------------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2021 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------------------------------
-# Modified from https://github.com/chengdazhi/Deformable-Convolution-V2-PyTorch/tree/pytorch_1.0.0
+# Modified from DCN (https://github.com/XinyiYing/D3Dnet)
+# Copyright (c) 2018 Microsoft
 # ------------------------------------------------------------------------------------------------
 
 from __future__ import absolute_import
@@ -15,15 +16,16 @@ import torch
 import torch.nn as nn
 from torch.autograd import gradcheck
 
-from functions.ms_deform_attn_func import MSDeformAttnFunction, ms_deform_attn_core_pytorch
+from functions.ms_deform_attn_func import MS3DDeformAttnFunction, ms_3d_deform_attn_core_pytorch
 
 
-N, M, D = 1, 8, 2
+N, M, D = 1, 2, 2
 Lq, L, P = 2, 2, 2
-F = 3
+F = 12
+Lq *= F
 shapes = torch.as_tensor([(6, 4), (3, 2)], dtype=torch.long).cuda()
-level_start_index = torch.cat((shapes.new_zeros((1, )), shapes.prod(1).cumsum(0)[:-1] * F))
-S = sum([(H*W*F).item() for H, W in shapes])
+level_start_index = F * torch.cat((shapes.new_zeros((1, )), shapes.prod(1).cumsum(0)[:-1]))
+S = sum([(F*H*W).item() for H, W in shapes])
 
 
 torch.manual_seed(3)
@@ -32,12 +34,12 @@ torch.manual_seed(3)
 @torch.no_grad()
 def check_forward_equal_with_pytorch_double():
     value = torch.rand(N, S, M, D).cuda() * 0.01
-    sampling_locations = torch.rand(N, Lq, M, L, P, 2).cuda()
+    sampling_locations = torch.rand(N, Lq, M, L, P, 3).cuda()
     attention_weights = torch.rand(N, Lq, M, L, P).cuda() + 1e-5
     attention_weights /= attention_weights.sum(-1, keepdim=True).sum(-2, keepdim=True)
     im2col_step = 2
-    output_pytorch = ms_deform_attn_core_pytorch(value.double(), shapes, sampling_locations.double(), attention_weights.double()).detach().cpu()
-    output_cuda = MSDeformAttnFunction.apply(value.double(), shapes, level_start_index, sampling_locations.double(), attention_weights.double(), im2col_step).detach().cpu()
+    output_pytorch = ms_3d_deform_attn_core_pytorch(value.double(), shapes, sampling_locations.double(), attention_weights.double(), F).detach().cpu()
+    output_cuda = MS3DDeformAttnFunction.apply(value.double(), shapes, level_start_index, sampling_locations.double(), attention_weights.double(), im2col_step, F).detach().cpu()
     fwdok = torch.allclose(output_cuda, output_pytorch)
     max_abs_err = (output_cuda - output_pytorch).abs().max()
     max_rel_err = ((output_cuda - output_pytorch).abs() / output_pytorch.abs()).max()
@@ -48,12 +50,12 @@ def check_forward_equal_with_pytorch_double():
 @torch.no_grad()
 def check_forward_equal_with_pytorch_float():
     value = torch.rand(N, S, M, D).cuda() * 0.01
-    sampling_locations = torch.rand(N, Lq*F, M, L, P, 2).cuda()
-    attention_weights = torch.rand(N, Lq*F, M, L, P).cuda() + 1e-5
+    sampling_locations = torch.rand(N, Lq, M, L, P, 3).cuda()
+    attention_weights = torch.rand(N, Lq, M, L, P).cuda() + 1e-5
     attention_weights /= attention_weights.sum(-1, keepdim=True).sum(-2, keepdim=True)
     im2col_step = 2
-    output_pytorch = ms_deform_attn_core_pytorch(value, shapes, sampling_locations, attention_weights).detach().cpu()
-    output_cuda = MSDeformAttnFunction.apply(value, shapes, level_start_index, sampling_locations, attention_weights, im2col_step).detach().cpu()
+    output_pytorch = ms_3d_deform_attn_core_pytorch(value, shapes, sampling_locations, attention_weights, F).detach().cpu()
+    output_cuda = MS3DDeformAttnFunction.apply(value, shapes, level_start_index, sampling_locations, attention_weights, im2col_step, F).detach().cpu()
     fwdok = torch.allclose(output_cuda, output_pytorch, rtol=1e-2, atol=1e-3)
     max_abs_err = (output_cuda - output_pytorch).abs().max()
     max_rel_err = ((output_cuda - output_pytorch).abs() / output_pytorch.abs()).max()
@@ -64,11 +66,11 @@ def check_forward_equal_with_pytorch_float():
 def check_gradient_numerical(channels=4, grad_value=True, grad_sampling_loc=True, grad_attn_weight=True):
 
     value = torch.rand(N, S, M, channels).cuda() * 0.01
-    sampling_locations = torch.rand(N, Lq*F, M, L, P, 3).cuda()
-    attention_weights = torch.rand(N, Lq*F, M, L, P).cuda() + 1e-5
+    sampling_locations = torch.rand(N, Lq, M, L, P, 3).cuda()
+    attention_weights = torch.rand(N, Lq, M, L, P).cuda() + 1e-5
     attention_weights /= attention_weights.sum(-1, keepdim=True).sum(-2, keepdim=True)
     im2col_step = 2
-    func = MSDeformAttnFunction.apply
+    func = MS3DDeformAttnFunction.apply
 
     value.requires_grad = grad_value
     sampling_locations.requires_grad = grad_sampling_loc
@@ -80,11 +82,10 @@ def check_gradient_numerical(channels=4, grad_value=True, grad_sampling_loc=True
 
 
 if __name__ == '__main__':
-    # check_forward_equal_with_pytorch_double()
-    # check_forward_equal_with_pytorch_float()
+    check_forward_equal_with_pytorch_double()
+    check_forward_equal_with_pytorch_float()
 
-    for channels in [32]:
+    for channels in [32, 64]:
         check_gradient_numerical(channels, True, True, True)
-
 
 

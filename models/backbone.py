@@ -63,10 +63,9 @@ class FrozenBatchNorm2d(torch.nn.Module):
         bias = b - rm * scale
         return x * scale + bias
 
-
 class BackboneBase(nn.Module):
 
-    def __init__(self, backbone: nn.Module, train_backbone: bool, return_interm_layers: bool):
+    def __init__(self, backbone: nn.Module, train_backbone: bool, return_interm_layers: bool, channels: int = None):
         super().__init__()
         for name, parameter in backbone.named_parameters():
             if not train_backbone or 'layer2' not in name and 'layer3' not in name and 'layer4' not in name:
@@ -80,6 +79,13 @@ class BackboneBase(nn.Module):
             return_layers = {'layer4': "0"}
             self.strides = [32]
             self.num_channels = [2048]
+
+        # input transform
+        if channels > 3:
+            input_weight = backbone.conv1.weight.clone()
+            backbone.conv1 = nn.Conv2d(channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            backbone.conv1.weight = nn.Parameter(torch.stack([torch.mean(input_weight, 1)]*channels, dim=1))
+
         self.body = IntermediateLayerGetter(
             backbone, return_layers=return_layers)
 
@@ -100,14 +106,15 @@ class Backbone(BackboneBase):
     def __init__(self, name: str,
                  train_backbone: bool,
                  return_interm_layers: bool,
-                 dilation: bool):
+                 dilation: bool,
+                 channels: int = None):
         norm_layer = FrozenBatchNorm2d
         backbone = getattr(torchvision.models, name)(
             replace_stride_with_dilation=[False, False, dilation],
             pretrained=is_main_process(), norm_layer=norm_layer)
         assert name not in (
             'resnet18', 'resnet34'), "number of channels are hard coded"
-        super().__init__(backbone, train_backbone, return_interm_layers)
+        super().__init__(backbone, train_backbone, return_interm_layers, channels)
         if dilation:
             self.strides[-1] = self.strides[-1] // 2
 
@@ -119,15 +126,15 @@ class Joiner(nn.Sequential):
         self.num_channels = backbone.num_channels
 
     def forward(self, tensor_list: NestedTensor):
-        if len(tensor_list.tensors.size()) > 4:
-            bs, f, c, h, w = tensor_list.tensors.shape
-            tensor_list.tensors = tensor_list.tensors.view(-1, c, h, w)
-            tensor_list.mask = tensor_list.mask.view(-1, h, w)
-
-        xs = self[0](tensor_list)
+        _, _, c, h, w = tensor_list.tensors.shape
+        tensor_list.tensors = tensor_list.tensors.view(-1, c, h, w)
+        tensor_list.mask = tensor_list.mask.view(-1, h, w)
+        
+        features = self[0](tensor_list)
         out: List[NestedTensor] = []
         pos = []
-        for name, x in sorted(xs.items()):
+
+        for _, x in sorted(features.items()):
             out.append(x)
 
         # position encoding
@@ -141,7 +148,14 @@ def build_backbone(args):
     position_embedding = build_position_encoding(args)
     train_backbone = args.lr_backbone > 0
     return_interm_layers = args.masks or (args.num_feature_levels > 1)
+    if args.load_mode == 'rgb':
+        channels = 3
+    elif args.load_mode == 'depth':
+        channels = 4
+    else:
+        assert args.load_mode == 'coords'
+        channels = 7
     backbone = Backbone(args.backbone, train_backbone,
-                        return_interm_layers, args.dilation)
+                        return_interm_layers, args.dilation, channels)
     model = Joiner(backbone, position_embedding)
     return model
