@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2022 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------------------------------
 # Modified from https://github.com/chengdazhi/Deformable-Convolution-V2-PyTorch/tree/pytorch_1.0.0
@@ -23,10 +23,10 @@ class MSDeformAttnFunction(Function):
     def forward(ctx, value, value_spatial_shapes, value_level_start_index, sampling_locations, attention_weights, im2col_step, n_frames):
         ctx.im2col_step = im2col_step
         output = MSDA.ms_deform_attn_forward(
-             value, value_spatial_shapes, value_level_start_index, sampling_locations, attention_weights, ctx.im2col_step, n_frames)
+            value, value_spatial_shapes, value_level_start_index, sampling_locations, attention_weights, ctx.im2col_step, n_frames)
         ctx.save_for_backward(value, value_spatial_shapes,
                               value_level_start_index, sampling_locations, attention_weights, torch.tensor(n_frames))
-        
+
         return output
 
     @staticmethod
@@ -46,7 +46,7 @@ def ms_deform_attn_core_pytorch(value, value_spatial_shapes, sampling_locations,
     :param sampling_locations          (N, Length_{query}, n_heads, n_levels, n_points, 3)
     :param attention_weights           (N, Length_{query}, n_heads, n_levels, n_points)
     """
-    
+
     # for debug and test only,
     # need to use cuda version instead
     N_, S_, M_, D_ = value.shape

@@ -1,7 +1,7 @@
 /*!
 **************************************************************************
 * Sequential DDETR
-* Copyright (c) 2020 SenseTime. All Rights Reserved.
+* Copyright (c) 2022 SenseTime. All Rights Reserved.
 * Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 **************************************************************************
 * Modified from DCN (https://github.com/XinyiYing/D3Dnet)
@@ -97,7 +97,8 @@ __device__ scalar_t ms_deform_attn_im2col_bilinear(const scalar_t *&bottom_data,
     const scalar_t w1 = hd * hh * hw, w2 = hd * hh * lw, w3 = hd * lh * hw, w4 = hd * lh * lw;
     const scalar_t w5 = ld * hh * hw, w6 = ld * hh * lw, w7 = ld * lh * hw, w8 = ld * lh * lw;
 
-    const scalar_t val = (w1 * v1 + w2 * v2 + w3 * v3 + w4 * v4 + w5 * v5 + w6 * v6 + w7 * v7 + w8 * v8);
+    const scalar_t val =
+        (w1 * v1 + w2 * v2 + w3 * v3 + w4 * v4 + w5 * v5 + w6 * v6 + w7 * v7 + w8 * v8);
     return val;
 }
 
@@ -208,7 +209,8 @@ __device__ void ms_deform_attn_col2im_bilinear(
         atomicAdd(grad_value + ptr8, w8 * top_grad_value);
     }
 
-    const scalar_t val = (w1 * v1 + w2 * v2 + w3 * v3 + w4 * v4 + w5 * v5 + w6 * v6 + w7 * v7 + w8 * v8);
+    const scalar_t val =
+        (w1 * v1 + w2 * v2 + w3 * v3 + w4 * v4 + w5 * v5 + w6 * v6 + w7 * v7 + w8 * v8);
     *grad_attn_weight = top_grad * val;
     *grad_sampling_loc = width * grad_w_weight * top_grad_value;
     *(grad_sampling_loc + 1) = height * grad_h_weight * top_grad_value;

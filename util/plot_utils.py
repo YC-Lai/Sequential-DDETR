@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2022 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 # Modified from DETR (https://github.com/facebookresearch/detr)
@@ -106,6 +106,3 @@ def plot_precision_recall(files, naming_scheme='iter'):
     axs[1].set_title('Scores / Recall')
     axs[1].legend(names)
     return fig, axs
-
-
-

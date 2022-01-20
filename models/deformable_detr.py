@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2022 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 # Modified from DETR (https://github.com/facebookresearch/detr)
@@ -8,7 +8,7 @@
 # ------------------------------------------------------------------------
 
 """
-Deformable DETR model and criterion classes.
+Sequential DDETR model and criterion classes.
 """
 import torch
 import torch.nn.functional as F
@@ -47,7 +47,7 @@ def _get_clones(module, N):
 
 
 class InputProj(nn.Module):
-    """ This is the Input projection module for Deformable DETR """
+    """ This is the Input projection module for Sequential DDETR """
 
     def __init__(
         self,
@@ -126,7 +126,7 @@ class InputProj(nn.Module):
 
 
 class DeformableDETR(nn.Module):
-    """ This is the Deformable DETR module that performs object detection """
+    """ This is the Sequential DDETR module that performs object detection """
 
     def __init__(
         self,
@@ -150,7 +150,7 @@ class DeformableDETR(nn.Module):
                          DETR can detect in a single image. For COCO, we recommend 100 queries.
             aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
             with_box_refine: iterative bounding box refinement
-            two_stage: two-stage Deformable DETR
+            two_stage: two-stage Sequential DDETR
         """
         super().__init__()
         self.num_queries = num_queries
@@ -244,7 +244,7 @@ class DeformableDETR(nn.Module):
         for src in srcs:
             print(src.shape)
         exit()
-        
+
         # transformer
         (
             hs,
@@ -313,7 +313,7 @@ class DeformableDETR(nn.Module):
             channels = self.transformer.d_model
             hs_last = hs[-1].reshape(bs_frames, -1, channels)
             memory_last = memory[:, level_start_index[-1]:,
-                                :].reshape(bs_frames, spatial_shapes[-1, 0], spatial_shapes[-1, 1], channels).permute(0, 3, 1, 2)
+                                 :].reshape(bs_frames, spatial_shapes[-1, 0], spatial_shapes[-1, 1], channels).permute(0, 3, 1, 2)
             mask_last = masks[-1]
 
             # FIXME h_boxes takes the last one computed, keep this in mind

@@ -1,6 +1,6 @@
 # --------------------------------------------------------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2022 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # --------------------------------------------------------------------------------------------------------------------------
 # Modified from https://github.com/pytorch/pytorch/blob/173f224570017b4b1a3a1a13d0bff280a54d9cd9/torch/distributed/launch.py

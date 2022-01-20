@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2022 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 # Modified from DETR (https://github.com/facebookresearch/detr)
@@ -62,6 +62,7 @@ class FrozenBatchNorm2d(torch.nn.Module):
         scale = w * (rv + eps).rsqrt()
         bias = b - rm * scale
         return x * scale + bias
+
 
 class BackboneBase(nn.Module):
 
@@ -129,7 +130,7 @@ class Joiner(nn.Sequential):
         _, _, c, h, w = tensor_list.tensors.shape
         tensor_list.tensors = tensor_list.tensors.view(-1, c, h, w)
         tensor_list.mask = tensor_list.mask.view(-1, h, w)
-        
+
         features = self[0](tensor_list)
         out: List[NestedTensor] = []
         pos = []
@@ -140,7 +141,7 @@ class Joiner(nn.Sequential):
         # position encoding
         for x in out:
             pos.append(self[1](x).to(x.tensors.dtype))
-        
+
         return out, pos
 
 

@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2022 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 # Modified from DETR (https://github.com/facebookresearch/detr)
@@ -8,27 +8,26 @@
 # ------------------------------------------------------------------------
 
 
+import imp
+from ast import arg
+from models import build_model
+from engine import evaluate, train_one_epoch
+from datasets import build_dataset, get_coco_api_from_dataset
+import datasets.samplers as samplers
+import util.misc as utils
+import datasets
+from torch.utils.data import DataLoader
+import torch
+import numpy as np
+from pathlib import Path
+import time
+import random
+import json
+import datetime
+import argparse
+from dashboard import Dashboard
 import sys
 sys.path.remove('/home/aicenteruav/catkin_ws/devel/lib/python2.7/dist-packages')
-
-from dashboard import Dashboard
-import argparse
-import datetime
-import json
-import random
-import time
-from pathlib import Path
-import numpy as np
-import torch
-from torch.utils.data import DataLoader
-import datasets
-import util.misc as utils
-import datasets.samplers as samplers
-from datasets import build_dataset, get_coco_api_from_dataset
-from engine import evaluate, train_one_epoch
-from models import build_model
-from ast import arg
-import imp
 
 
 def get_args_parser():
@@ -49,7 +48,7 @@ def get_args_parser():
     parser.add_argument('--sgd', action='store_true')
     parser.add_argument('--use_comet', action='store_true')
 
-    # Variants of Deformable DETR
+    # Variants of Sequential DDETR
     parser.add_argument('--with_box_refine', default=False, action='store_true')
     parser.add_argument('--two_stage', default=False, action='store_true')
 
@@ -127,7 +126,7 @@ def get_args_parser():
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
     parser.add_argument('--eval', action='store_true')
-    parser.add_argument('--num_workers', default=0, type=int) # A good rule of thumb: num_worker = 4 * num_GPU
+    parser.add_argument('--num_workers', default=0, type=int)  # A good rule of thumb: num_worker = 4 * num_GPU
     parser.add_argument('--cache_mode', default=False, action='store_true', help='whether to cache images on memory')
     parser.add_argument('--load_mode', default='coords')
     parser.add_argument('--seg_classes', default='nyu40')
@@ -155,10 +154,10 @@ def main(args):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    
+
     # enable cuDNN autotuner can improve convolution performance
     torch.backends.cudnn.benchmark = True
-    
+
     model, criterion, postprocessors = build_model(args)
     model.to(device)
 
@@ -293,9 +292,9 @@ def main(args):
         if comet_dashboard is not None:
             comet_dashboard.set_status("training")
         train_stats, comet_dashboard = train_one_epoch(model, criterion, data_loader_train, optimizer,
-                                      device, epoch, args.clip_max_norm, comet_dashboard)
+                                                       device, epoch, args.clip_max_norm, comet_dashboard)
         lr_scheduler.step()
-        
+
         if comet_dashboard is not None:
             comet_dashboard.update_epoch()
 
@@ -322,7 +321,7 @@ def main(args):
         if comet_dashboard is not None:
             comet_dashboard.set_status("evaluating")
             comet_dashboard.log_metrics(test_stats)
-        
+
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in test_stats.items()},
                      'epoch': epoch,
@@ -350,7 +349,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        'Deformable DETR training and evaluation script', parents=[get_args_parser()])
+        'Sequential DDETR training and evaluation script', parents=[get_args_parser()])
     args = parser.parse_args()
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)

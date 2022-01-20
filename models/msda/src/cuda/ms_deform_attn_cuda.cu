@@ -1,7 +1,7 @@
 /*!
 **************************************************************************
 * Sequential DDETR
-* Copyright (c) 2020 SenseTime. All Rights Reserved.
+* Copyright (c) 2022 SenseTime. All Rights Reserved.
 * Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 **************************************************************************
 * Modified from DCN (https://github.com/XinyiYing/D3Dnet)
@@ -14,15 +14,16 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#include <vector>
 #include <iostream>
+#include <vector>
 
 #include "cuda/ms_deform_im2col_cuda.cuh"
 
 at::Tensor ms_deform_attn_cuda_forward(const at::Tensor &value, const at::Tensor &spatial_shapes,
                                        const at::Tensor &level_start_index,
                                        const at::Tensor &sampling_loc,
-                                       const at::Tensor &attn_weight, const int im2col_step, const int n_frames) {
+                                       const at::Tensor &attn_weight, const int im2col_step,
+                                       const int n_frames) {
     AT_ASSERTM(value.is_contiguous(), "value tensor has to be contiguous");
     AT_ASSERTM(spatial_shapes.is_contiguous(), "spatial_shapes tensor has to be contiguous");
     AT_ASSERTM(level_start_index.is_contiguous(), "level_start_index tensor has to be contiguous");

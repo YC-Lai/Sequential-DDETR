@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2022 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 # Modified from DETR (https://github.com/facebookresearch/detr)
@@ -265,7 +265,7 @@ class DeformableTransformer(nn.Module):
                 memory, mask_flatten, spatial_shapes
             )
 
-            # hack implementation for two-stage Deformable DETR
+            # hack implementation for two-stage Sequential DDETR
             enc_outputs_class = self.decoder.class_embed[self.decoder.num_layers](
                 output_memory
             )
@@ -582,7 +582,7 @@ class DeformableTransformerDecoder(nn.Module):
         self.layers = _get_clones(decoder_layer, num_layers)
         self.num_layers = num_layers
         self.return_intermediate = return_intermediate
-        # hack implementation for iterative bounding box refinement and two-stage Deformable DETR
+        # hack implementation for iterative bounding box refinement and two-stage Sequential DDETR
         self.bbox_embed = None
         self.class_embed = None
 

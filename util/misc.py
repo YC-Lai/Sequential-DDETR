@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2022 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 # Modified from DETR (https://github.com/facebookresearch/detr)
@@ -30,6 +30,7 @@ import torchvision
 if float(torchvision.__version__[2:-2]) < 5:
     import math
     from torchvision.ops.misc import _NewEmptyTensorOp
+
     def _check_size_scale_factor(dim, size, scale_factor):
         # type: (int, Optional[List[int]], Optional[float]) -> None
         if size is None and scale_factor is None:
@@ -41,6 +42,7 @@ if float(torchvision.__version__[2:-2]) < 5:
                 "scale_factor shape must match input shape. "
                 "Input is {}D, scale_factor size is {}".format(dim, len(scale_factor))
             )
+
     def _output_size(dim, input, size, scale_factor):
         # type: (int, Tensor, Optional[List[int]], Optional[float]) -> List[int]
         assert dim == 2

@@ -1,11 +1,11 @@
 # ------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2022 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 
 """
-Benchmark inference speed of Deformable DETR.
+Benchmark inference speed of Sequential DDETR.
 """
 import os
 import time
@@ -20,7 +20,7 @@ from util.misc import nested_tensor_from_tensor_list
 
 
 def get_benckmark_arg_parser():
-    parser = argparse.ArgumentParser('Benchmark inference speed of Deformable DETR.')
+    parser = argparse.ArgumentParser('Benchmark inference speed of Sequential DDETR.')
     parser.add_argument('--num_iters', type=int, default=300, help='total iters to benchmark speed')
     parser.add_argument('--warm_iters', type=int, default=5, help='ignore first several iters that are very slow')
     parser.add_argument('--batch_size', type=int, default=1, help='batch size in inference')
@@ -38,7 +38,7 @@ def measure_average_inference_time(model, inputs, num_iters=100, warm_iters=5):
         torch.cuda.synchronize()
         t = time.perf_counter() - t_
         if iter_ >= warm_iters:
-          ts.append(t)
+            ts.append(t)
     print(ts)
     return sum(ts) / len(ts)
 
@@ -64,4 +64,3 @@ def benchmark():
 if __name__ == '__main__':
     fps = benchmark()
     print(f'Inference Speed: {fps:.1f} FPS')
-

@@ -1,7 +1,7 @@
 /*!
 **************************************************************************************************
-* Deformable DETR
-* Copyright (c) 2020 SenseTime. All Rights Reserved.
+* Sequential DDETR
+* Copyright (c) 2022 SenseTime. All Rights Reserved.
 * Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 **************************************************************************************************
 * Modified from https://github.com/chengdazhi/Deformable-Convolution-V2-PyTorch/tree/pytorch_1.0.0
@@ -13,15 +13,16 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#include <vector>
 #include <iostream>
+#include <vector>
 
 #include "cuda/ms_deform_im2col_cuda.cuh"
 
 at::Tensor ms_deform_attn_cuda_forward(const at::Tensor &value, const at::Tensor &spatial_shapes,
                                        const at::Tensor &level_start_index,
                                        const at::Tensor &sampling_loc,
-                                       const at::Tensor &attn_weight, const int im2col_step, const int n_frames) {
+                                       const at::Tensor &attn_weight, const int im2col_step,
+                                       const int n_frames) {
     AT_ASSERTM(value.is_contiguous(), "value tensor has to be contiguous");
     AT_ASSERTM(spatial_shapes.is_contiguous(), "spatial_shapes tensor has to be contiguous");
     AT_ASSERTM(level_start_index.is_contiguous(), "level_start_index tensor has to be contiguous");
@@ -117,7 +118,7 @@ std::vector<at::Tensor> ms_deform_attn_cuda_backward(
 
     const int batch_n = im2col_step_;
     auto per_value_size = spatial_size * num_heads * channels;
-    // change the sample loc size into 3 
+    // change the sample loc size into 3
     auto per_sample_loc_size = num_query * num_heads * num_levels * num_point * 3;
     auto per_attn_weight_size = num_query * num_heads * num_levels * num_point;
     auto grad_output_n =

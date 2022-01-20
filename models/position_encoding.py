@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2022 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 # Modified from DETR (https://github.com/facebookresearch/detr)
@@ -22,6 +22,7 @@ class PositionEmbeddingSine(nn.Module):
     This is a more standard version of the position embedding, very similar to the one
     used by the Attention is all you need paper, generalized to work on images.
     """
+
     def __init__(self, num_pos_feats=64, hidden_dim=256, num_frames=3, temperature=10000, normalize=False, scale=None):
         super().__init__()
         self.num_pos_feats = num_pos_feats
@@ -52,14 +53,14 @@ class PositionEmbeddingSine(nn.Module):
             x_embed = (x_embed - 0.5) / (x_embed[:, :, :, -1:] + eps) * self.scale
 
         dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device=x.device)
-        dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats) 
+        dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats)
         if self.hidden_dim % 3 != 0:
             num_r = self.hidden_dim - self.num_pos_feats*2
             dim_tr = torch.arange(num_r, dtype=torch.float32, device=x.device)
             dim_tr = self.temperature ** (2 * (dim_tr // 2) / num_r)
         else:
-            dim_tr = dim_t        
-    
+            dim_tr = dim_t
+
         pos_x = x_embed[:, :, :, :, None] / dim_t
         pos_y = y_embed[:, :, :, :, None] / dim_t
         pos_z = z_embed[:, :, :, :, None] / dim_tr
@@ -75,6 +76,7 @@ class PositionEmbeddingLearned(nn.Module):
     """
     Absolute pos embedding, learned.
     """
+
     def __init__(self, num_pos_feats=256, num_frames=3):
         super().__init__()
         self.row_embed = nn.Embedding(50, num_pos_feats)
@@ -107,7 +109,8 @@ def build_position_encoding(args):
         N_steps += 1
     if args.position_embedding in ('v2', 'sine'):
         # TODO find a better way of exposing other arguments
-        position_embedding = PositionEmbeddingSine(N_steps, hidden_dim=args.hidden_dim, num_frames=args.num_frames, normalize=True)
+        position_embedding = PositionEmbeddingSine(
+            N_steps, hidden_dim=args.hidden_dim, num_frames=args.num_frames, normalize=True)
     elif args.position_embedding in ('v3', 'learned'):
         position_embedding = PositionEmbeddingLearned(N_steps)
     else:

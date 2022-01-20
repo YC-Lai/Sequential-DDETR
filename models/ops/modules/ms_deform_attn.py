@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2022 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------------------------------
 # Modified from https://github.com/chengdazhi/Deformable-Convolution-V2-PyTorch/tree/pytorch_1.0.0
@@ -20,6 +20,7 @@ import torch.nn.functional as F
 from torch.nn.init import xavier_uniform_, constant_
 
 from ..functions import MSDeformAttnFunction
+
 
 def _is_power_of_2(n):
     if (not isinstance(n, int)) or (n < 0):
@@ -77,15 +78,15 @@ class MSDeformAttn(nn.Module):
             self.n_heads, 1, 1, 2).repeat(1, self.n_levels, self.n_points, 1)
         for i in range(self.n_points):
             grid_init[:, :, i, :] *= i + 1
-        
+
         # # XXX: add time init
         time_init = torch.linspace(0, 1, steps=self.n_points, dtype=torch.float32)
         time_init = time_init[None, None, :].repeat(self.n_heads, self.n_levels, 1)
-        
+
         with torch.no_grad():
             self.sampling_offsets.bias = nn.Parameter(grid_init.view(-1))
             self.time_offsets.bias = nn.Parameter(time_init.view(-1))
-        
+
         constant_(self.attention_weights.weight.data, 0.)
         constant_(self.attention_weights.bias.data, 0.)
         xavier_uniform_(self.value_proj.weight.data)
@@ -130,23 +131,23 @@ class MSDeformAttn(nn.Module):
         # TODO: expend offsets to (x, y, t)
         sampling_offsets = self.sampling_offsets(query).view(
             N, Len_q, self.n_heads, self.n_levels, self.n_points, 2)
-        
-        # XXX: time offsets 
+
+        # XXX: time offsets
         time_offsets = self.time_offsets(query).view(
             N, Len_q, self.n_heads, self.n_levels * self.n_points)
         time_offsets = F.softmax(
             time_offsets, -1).view(N, Len_q, self.n_heads, self.n_levels, self.n_points, 1)
-        
+
         attention_weights = self.attention_weights(query).view(
             N, Len_q, self.n_heads, self.n_levels * self.n_points)
         attention_weights = F.softmax(
             attention_weights, -1).view(N, Len_q, self.n_heads, self.n_levels, self.n_points)
-        
+
         if reference_points.shape[-1] == 2:
             offset_normalizer = torch.stack([input_spatial_shapes[..., 1], input_spatial_shapes[..., 0]], -1)
             sampling_locations = reference_points[:, :, None, :, None, :] \
-                                 + sampling_offsets / offset_normalizer[None, None, None, :, None, :]
-        
+                + sampling_offsets / offset_normalizer[None, None, None, :, None, :]
+
         # TODO: add new 3D offsets policy
         elif reference_points.shape[-1] == 3:
             offset_normalizer = torch.stack([input_spatial_shapes[..., 1],
@@ -155,16 +156,16 @@ class MSDeformAttn(nn.Module):
 
             reference_points = reference_points[:, :, None, :, None, :]
             # FIXME: concat query's t coordinate to sampling_offsets
-            sampling_offsets = torch.cat((sampling_offsets, time_offsets), -1)            
+            sampling_offsets = torch.cat((sampling_offsets, time_offsets), -1)
             # sampling_locations's shape: (N, Len_q, n_heads, n_levels, n_points, 3)
             sampling_locations = reference_points \
-                                 + sampling_offsets / offset_normalizer[None, None, None, :, None, :]
+                + sampling_offsets / offset_normalizer[None, None, None, :, None, :]
             sampling_locations = self.set_frame_index(sampling_locations, self.n_frames)
             # print(sampling_locations[0, 300, 1, 0, 0])
-            
+
         elif reference_points.shape[-1] == 4:
             sampling_locations = reference_points[:, :, None, :, None, :2] \
-                                 + sampling_offsets / self.n_points * reference_points[:, :, None, :, None, 2:] * 0.5
+                + sampling_offsets / self.n_points * reference_points[:, :, None, :, None, 2:] * 0.5
         else:
             raise ValueError(
                 'Last dim of reference_points must be 2, 3 or 4, but get {} instead.'.format(reference_points.shape[-1]))

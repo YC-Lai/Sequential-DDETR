@@ -1,10 +1,11 @@
 # ------------------------------------------------------------------------
 # Sequential DDETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Copyright (c) 2022 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # # ------------------------------------------------------------------------
 
 import torch
+
 
 def to_cuda(samples, targets, device):
     samples = samples.to(device, non_blocking=True)

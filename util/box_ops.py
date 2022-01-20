@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2022 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 # Modified from DETR (https://github.com/facebookresearch/detr)
@@ -16,8 +16,8 @@ from torchvision.ops.boxes import box_area
 
 def box_cxcywh_to_xyxy(x):
     x_c, y_c, w, h = x.unbind(-1)
-    assert torch.all(w>=0)
-    assert torch.all(h>=0)
+    assert torch.all(w >= 0)
+    assert torch.all(h >= 0)
     b = [(x_c - 0.5 * w), (y_c - 0.5 * h),
          (x_c + 0.5 * w), (y_c + 0.5 * h)]
     return torch.stack(b, dim=-1)

@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2022 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 # Modified from DETR (https://github.com/facebookresearch/detr)
@@ -118,11 +118,11 @@ def resize(rgb, depth, coords, target, size, max_size=None):
 
     if rgb is not None:
         size = get_size(rgb.size(), size, max_size)
-        
+
         rescaled_image = F.resize(rgb, (size[0], size[1]))
-        
+
         ratios = tuple(float(s) / float(s_orig)
-                    for s, s_orig in zip((rescaled_image.shape[1], rescaled_image.shape[2]), (rgb.shape[1], rgb.shape[2])))
+                       for s, s_orig in zip((rescaled_image.shape[1], rescaled_image.shape[2]), (rgb.shape[1], rgb.shape[2])))
         ratio_height, ratio_width = ratios
     else:
         ratio_height, ratio_width = size[0]/target['orig_size'][0], size[1]/target['orig_size'][1]
@@ -146,7 +146,7 @@ def resize(rgb, depth, coords, target, size, max_size=None):
 
     h, w = size
     target["size"] = torch.tensor([h, w])
-    
+
     if "masks" in target:
         target['masks'] = torch.nn.functional.interpolate(
             target['masks'][:, None].float(), (h, w), mode="nearest")[:, 0] > 0.5

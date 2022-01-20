@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
+# Sequential DDETR
+# Copyright (c) 2022 SenseTime. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 # Modified from codes in torch.utils.data.distributed
@@ -60,7 +60,7 @@ class DistributedSampler(Sampler):
 
         # subsample
         offset = self.num_samples * self.rank
-        indices = indices[offset : offset + self.num_samples]
+        indices = indices[offset: offset + self.num_samples]
         assert len(indices) == self.num_samples
 
         return iter(indices)
