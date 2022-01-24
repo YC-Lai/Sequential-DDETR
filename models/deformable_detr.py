@@ -241,10 +241,6 @@ class DeformableDETR(nn.Module):
         if not self.two_stage:
             query_embeds = self.query_embed.weight
 
-        for src in srcs:
-            print(src.shape)
-        exit()
-
         # transformer
         (
             hs,

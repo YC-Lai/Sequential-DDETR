@@ -37,7 +37,7 @@ def get_filenames_scannet(base_dir, scene_id):
     # Explore the directory tree to get a list of all files
     for path, _, files in os.walk(os.path.join(base_dir, scene_id, 'color')):
         files = natsorted(files)
-        for file in files[::2]:
+        for file in files:
             filename, _ = os.path.splitext(file)
             depthfile = os.path.join(base_dir, scene_id, 'depth', filename + '.png')
             labelfile = os.path.join(base_dir, scene_id, 'label-filt', filename + '.png')
