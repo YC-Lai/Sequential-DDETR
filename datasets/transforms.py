@@ -10,6 +10,7 @@
 """
 Transforms and data augmentation for both image + bbox.
 """
+import imp
 import random
 
 import PIL
@@ -17,6 +18,7 @@ from numpy import dtype
 import torch
 import torchvision.transforms as T
 import torchvision.transforms.functional as F
+from torchvision.transforms import InterpolationMode
 
 
 from util.box_ops import box_xyxy_to_cxcywh
@@ -120,16 +122,19 @@ def resize(rgb, depth, coords, target, size, max_size=None):
         size = get_size(rgb.size(), size, max_size)
 
         rescaled_image = F.resize(rgb, (size[0], size[1]))
+        rescaled_depth = F.resize(depth, (size[0], size[1]), interpolation=InterpolationMode.NEAREST)
+        rescaled_depth = (rescaled_depth - rescaled_depth.min()) / (rescaled_depth.max() - rescaled_depth.min()) * 255
+        rescaled_coords = F.resize(coords, (size[0], size[1]))
 
         ratios = tuple(float(s) / float(s_orig)
                        for s, s_orig in zip((rescaled_image.shape[1], rescaled_image.shape[2]), (rgb.shape[1], rgb.shape[2])))
         ratio_height, ratio_width = ratios
     else:
         ratio_height, ratio_width = size[0]/target['orig_size'][0], size[1]/target['orig_size'][1]
-        rescaled_image = None
+        rescaled_image = rescaled_depth = rescaled_coords = None
 
     if target is None:
-        return rescaled_image, depth, coords, None
+        return rescaled_image, rescaled_depth, rescaled_coords, None
 
     target = target.copy()
     if "boxes" in target:
@@ -150,7 +155,7 @@ def resize(rgb, depth, coords, target, size, max_size=None):
     if "masks" in target:
         target['masks'] = torch.nn.functional.interpolate(
             target['masks'][:, None].float(), (h, w), mode="nearest")[:, 0] > 0.5
-    return rescaled_image, depth, coords, target
+    return rescaled_image, rescaled_depth, rescaled_coords, target
 
 
 def pad(image, target, padding):
@@ -270,6 +275,7 @@ class Normalize(object):
     def __call__(self, rgb, depth, coords, target=None):
         if rgb is not None:
             image = F.normalize(rgb / 255.0, mean=self.mean, std=self.std)
+            depth = F.normalize(depth / 255.0, mean=self.mean[0], std=self.std[0])
             h, w = image.shape[-2:]
         else:
             image = None

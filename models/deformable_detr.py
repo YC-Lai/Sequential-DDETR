@@ -24,6 +24,7 @@ from util.misc import (
     interpolate,
     is_dist_avail_and_initialized,
     inverse_sigmoid,
+    mean_average_precision
 )
 
 from .backbone import build_backbone
@@ -497,6 +498,39 @@ class SetCriterion(nn.Module):
         }
         return losses
 
+    @torch.no_grad()
+    def loss_map(self, outputs, targets, indices, num_boxes):
+        assert "pred_boxes" in outputs
+        assert "pred_logits" in outputs
+        
+        idx = self._get_src_permutation_idx(indices)
+        img_idx = idx[0].unsqueeze(-1).to(outputs["pred_boxes"].device)
+        
+        src_probs = F.softmax(outputs["pred_logits"], dim=1)    
+        num_classes = src_probs.shape[-1] + 1 # add no-object class
+        src_boxes = outputs["pred_boxes"]
+        src_score, src_classes = src_probs[idx].topk(1, 1, True, True)
+        src_boxes = box_ops.box_cxcywh_to_xyxy(src_boxes[idx])
+        
+        target_classes = torch.cat(
+            [t["labels"][J] for t, (_, J) in zip(targets, indices)]
+        )
+        target_classes = target_classes.unsqueeze(-1)
+        target_boxes = torch.cat(
+            [t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0
+        )
+        target_boxes = box_ops.box_cxcywh_to_xyxy(target_boxes)
+        target_score = torch.ones_like(target_classes)
+        
+        pred_boxes = torch.cat((img_idx, src_classes, src_score, src_boxes), dim=1).tolist()
+        true_boxes = torch.cat((img_idx, target_classes, target_score, target_boxes), dim=1).tolist()
+        
+        losses = {
+            "loss_mAP": mean_average_precision(pred_boxes, true_boxes, num_classes=num_classes)
+        }
+        return losses   
+        
+    
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = torch.cat(
@@ -519,6 +553,7 @@ class SetCriterion(nn.Module):
             "cardinality": self.loss_cardinality,
             "boxes": self.loss_boxes,
             "masks": self.loss_masks,
+            "map": self.loss_map
         }
         assert loss in loss_map, f"do you really want to compute {loss} loss?"
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
@@ -687,7 +722,7 @@ def build(args):
         aux_weight_dict.update({k + f"_enc": v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
 
-    losses = ["labels", "boxes", "cardinality"]
+    losses = ["labels", "boxes", "cardinality", "map"]
     if args.masks:
         losses += ["masks"]
     # num_classes, matcher, weight_dict, losses, focal_alpha=0.25

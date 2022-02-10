@@ -104,7 +104,7 @@ def get_coco_api_from_dataset(dataset):
             dataset = dataset.dataset
     if isinstance(dataset, CocoDetection):
         return dataset.coco
-    return convert_to_coco_api_parallel(dataset)
+    return dataset
 
 
 def build_dataset(image_set, args):

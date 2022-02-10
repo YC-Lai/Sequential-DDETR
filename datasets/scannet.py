@@ -219,7 +219,7 @@ def make_transforms(image_set):
         T.Normalize(color_mean, color_std)
     ])
 
-    scales = [(480, 640)]  # (h, w)
+    scales = [(240, 320)]  # (h, w)
 
     if image_set == 'train':
         return T.Compose([

@@ -313,7 +313,10 @@ def get_preprocessing_map(label_map):
     with open(label_map) as csvfile:
         reader = csv.DictReader(csvfile, delimiter='\t')
         for row in reader:
-            mapping[int(row["id"])] = int(row["nyu40id"])
+            if type(row["nyu40id"]) != int:
+                mapping[int(row["id"])] = 40
+            else:
+                mapping[int(row["id"])] = int(row["nyu40id"])
     return mapping
 
 
