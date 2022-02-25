@@ -37,7 +37,7 @@ def get_filenames_scannet(base_dir, scene_id):
     # Explore the directory tree to get a list of all files
     for path, _, files in os.walk(os.path.join(base_dir, scene_id, 'color')):
         files = natsorted(files)
-        for file in files:
+        for file in files[]:
             filename, _ = os.path.splitext(file)
             depthfile = os.path.join(base_dir, scene_id, 'depth', filename + '.png')
             labelfile = os.path.join(base_dir, scene_id, 'label-filt', filename + '.png')
@@ -177,7 +177,8 @@ def load_depth_coords(pose_path: StringType, depth_path: StringType, intrinsic_p
     # transform
     u = torch.arange(0, w)
     v = torch.arange(0, h)
-    grid_u, grid_v = torch.meshgrid(u, v, indexing='xy')
+    grid_u, grid_v = np.meshgrid(u, v, indexing='xy')
+    grid_u, grid_v = torch.from_numpy(grid_u), torch.from_numpy(grid_v)
 
     X = (grid_u - intrinsic[0, 2]) * depth / intrinsic[0, 0]
     Y = (grid_v - intrinsic[1, 2]) * depth / intrinsic[1, 1]
