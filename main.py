@@ -8,6 +8,7 @@
 # ------------------------------------------------------------------------
 
 
+from dashboard import Dashboard
 import imp
 from ast import arg
 from models import build_model
@@ -25,7 +26,6 @@ import random
 import json
 import datetime
 import argparse
-from dashboard import Dashboard
 import sys
 sys.path.remove('/home/aicenteruav/catkin_ws/devel/lib/python2.7/dist-packages')
 

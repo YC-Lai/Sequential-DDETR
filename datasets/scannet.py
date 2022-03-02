@@ -5,6 +5,7 @@ from torchvision.datasets.vision import VisionDataset
 import datasets.utils as utils
 import datasets.transforms as T
 from pathlib import Path
+import os
 
 
 class ScanNet(VisionDataset):
@@ -31,7 +32,6 @@ class ScanNet(VisionDataset):
         self.root_dir = root_dir
         self.mode = mode
         self.loader = loader
-        self.length = 0
         self.load_mode = load_mode
         self.seg_classes = seg_classes
         self.num_frames = num_frames
@@ -50,49 +50,32 @@ class ScanNet(VisionDataset):
         except Exception as e:
             raise e
 
-        # Get train data and labels filepaths
-        self.data = []
-        self.depth = []
-        self.labels = []
-        self.instances = []
-        self.poses = []
+        # Create a list of the cumulative number of data through each scene
+        cumulative_num, length = utils.get_files_cumulativeNum(root_dir, scene_list, num_frames)
+
+        self.scene_list = scene_list
+        self.cumulative_num = cumulative_num
+        self.length = length
+        self.raw_length = length + (num_frames - 1) * (len(cumulative_num))
+
+        # Get intrinsic of each scene
         self.intrinsic = []
-        self.num_sceneData = []
         for scene in scene_list:
-            color_images, depth_images, labels, instances, poses, intrinsic = utils.get_filenames_scannet(
-                self.root_dir, scene)
-            self.data += color_images
-            self.depth += depth_images
-            self.labels += labels
-            self.instances += instances
-            self.poses += poses
-            self.intrinsic.append(intrinsic)
-            self.length += len(color_images)
-            self.num_sceneData.append(len(color_images))
-
-    def get_len_for_cocoApi(self):
-        """ Returns the length of the dataset. """
-        return self.length
-
-    def get_item_for_cocoApi(self, index):
-
-        data_path, label_path, instance_path = self.data[index], self.labels[index], self.instances[index]
-        path_set = dict({'rgb': data_path, 'depth': None, 'pose': None,
-                        'label': label_path, 'instance': instance_path, 'intrinsic': None})
-        rgb, depth, coords, target = self.loader(
-            index, path_set, 'load_target_only', self.preprocessing_map, self.seg_classes)
-        _, _, _, target = self.transforms(rgb, depth, coords, target)
-
-        return target
+            self.intrinsic.append(os.path.join(root_dir, scene, "intrinsic", "intrinsic_depth.txt"))
 
     def get_data_Id(self, index):
         """ Cover the sequential id to the dataset id. """
-        sum = 0
-        for i, num_data in enumerate(self.num_sceneData):
-            num_data -= self.num_frames - 1
-            sum += num_data
-            if sum > index:
-                return i, index + (i + 1) * (self.num_frames - 1)
+        left, right = 0, len(self.cumulative_num) - 1
+        while left <= right:
+            pivot = (left + right) // 2
+            if self.cumulative_num[pivot] == index:
+                return pivot, self.num_frames
+            if index < self.cumulative_num[pivot]:
+                right = pivot - 1
+            else:
+                left = pivot + 1
+
+        return right, (self.num_frames - 1) + (index - self.cumulative_num[right])
 
     def get_data_sequence(self, sceneId, data_start_index):
         data_seq = []
@@ -100,8 +83,8 @@ class ScanNet(VisionDataset):
         intrinsic_path = self.intrinsic[sceneId]
         for i in range(self.num_frames):
             index = data_start_index - i
-            data_path, depth_path, label_path, instance_path, pose_path = self.data[
-                index], self.depth[index], self.labels[index], self.instances[index], self.poses[index]
+            data_path, depth_path, label_path, instance_path, pose_path = utils.get_file(
+                self.root_dir, self.scene_list[sceneId], index, self.num_frames)
             path_set = dict({'rgb': data_path, 'depth': depth_path, 'pose': pose_path,
                             'label': label_path, 'instance': instance_path, 'intrinsic': intrinsic_path})
             rgb, depth, coords, target = self.loader(
@@ -119,7 +102,7 @@ class ScanNet(VisionDataset):
 
             data_seq.append(data)
             target_seq.append(target)
-
+        
         return torch.stack(data_seq, dim=0), target_seq
 
     def __getitem__(self, index):
@@ -136,7 +119,7 @@ class ScanNet(VisionDataset):
 
     def __len__(self):
         """ Returns the sequential length of the dataset. """
-        return self.length - (self.num_frames - 1) * len(self.num_sceneData)
+        return self.length
 
     def get_color_encoding(self):
         if self.seg_classes.lower() == 'nyu40':

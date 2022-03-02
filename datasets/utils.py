@@ -10,105 +10,64 @@ from torch._C import StringType
 import torchvision.transforms as transforms
 
 
-def get_filenames_scannet(base_dir, scene_id):
-    """Helper function that returns a list of scannet images and the corresponding 
-    segmentation labels, given a base directory name and a scene id.
+def get_files_cumulativeNum(root_dir, scene_list, num_frames) -> list:
+    """Helper function that returns a list of the cumulative number of data
+    through each scene. 
 
     Args:
-    - base_dir (``string``): Path to the base directory containing ScanNet data, in the 
-    directory structure specified in https://github.com/angeladai/3DMV/tree/master/prepare_data
-    - scene_id (``string``): ScanNet scene id
+    - root_dir (``string``): Path to the base directory containing ScanNet data.
+    - scene_id (``list``): ScanNet scene id list
+    - num_frames (``int``): number of frames
 
     """
 
-    if not os.path.isdir(base_dir):
-        raise RuntimeError('\'{0}\' is not a directory.'.format(base_dir))
+    cumulative_num = []
+    count = 0
+    for scene in scene_list:
+        cumulative_num.append(count)
+        path = os.path.join(root_dir, scene, 'color')
+        if not os.path.isdir(path):
+            raise RuntimeError("\"{0}\" is not a folder.".format(path))
+        count += len(os.listdir(path)) - num_frames + 1
 
-    color_images = []
-    depth_images = []
-    labels = []
-    instances = []
-    poses = []
-    intrinsic = os.path.join(base_dir, scene_id, "intrinsic", "intrinsic_depth.txt")
-
-    # for debug only, can be ignored
-    invalid_list = []
-
-    # Explore the directory tree to get a list of all files
-    for path, _, files in os.walk(os.path.join(base_dir, scene_id, 'color')):
-        files = natsorted(files)
-        for file in files[::5]:
-            filename, _ = os.path.splitext(file)
-            depthfile = os.path.join(base_dir, scene_id, 'depth', filename + '.png')
-            labelfile = os.path.join(base_dir, scene_id, 'label-filt', filename + '.png')
-            instancefile = os.path.join(base_dir, scene_id, 'instance-filt', filename + '.png')
-            posefile = os.path.join(base_dir, scene_id, 'pose', filename + '.txt')
-            # Add this file to the list of train samples, only if its corresponding depth and label
-            # files exist.
-            if os.path.exists(depthfile) and os.path.exists(labelfile) and os.path.exists(instancefile) and os.path.exists(posefile):
-                if is_pose_invalid(posefile):
-                    invalid_list.append(filename)
-                    continue
-                color_images.append(os.path.join(base_dir, scene_id, 'color', filename + '.jpg'))
-                depth_images.append(depthfile)
-                labels.append(labelfile)
-                instances.append(instancefile)
-                poses.append(posefile)
-
-    # Assert that we have the same number of color, depth images as labels
-    assert (len(color_images) == len(depth_images) == len(labels) == len(instances) == len(poses))
-
-    return color_images, depth_images, labels, instances, poses, intrinsic
+    return cumulative_num, count
 
 
-def get_files(folder, name_filter=None, extension_filter=None):
-    """Helper function that returns the list of files in a specified folder
-    with a specified extension.
+def get_file(root_dir, scene, id, num_frames):
 
-    Keyword arguments:
-    - folder (``string``): The path to a folder.
-    - name_filter (``string``, optional): The returned files must contain
-    this substring in their filename. Default: None; files are not filtered.
-    - extension_filter (``string``, optional): The desired file extension.
-    Default: None; files are not filtered
+    filename = str(id)
 
-    """
-    if not os.path.isdir(folder):
-        raise RuntimeError("\"{0}\" is not a folder.".format(folder))
+    color = os.path.join(root_dir, scene, 'color', filename + '.jpg')
+    depth = os.path.join(root_dir, scene, 'depth', filename + '.png')
+    label = os.path.join(root_dir, scene, 'label-filt', filename + '.png')
+    instance = os.path.join(root_dir, scene, 'instance-filt', filename + '.png')
+    pose = os.path.join(root_dir, scene, 'pose', filename + '.txt')
 
-    # Filename filter: if not specified don't filter (condition always true);
-    # otherwise, use a lambda expression to filter out files that do not
-    # contain "name_filter"
-    if name_filter is None:
-        # This looks hackish...there is probably a better way
-        def name_cond(filename): return True
-    else:
-        def name_cond(filename): return name_filter in filename
+    # handle invalid pose value (ex: nan)
+    pace = 0
+    while is_pose_invalid(pose):
+        pace += 1
+        pre_pose = os.path.join(root_dir, scene, 'pose', str(id - pace) + '.txt')
+        post_pose = os.path.join(root_dir, scene, 'pose', str(id + pace) + '.txt')
+        if os.path.exists(pre_pose):
+            if is_pose_invalid(pre_pose):
+                pose = pre_pose
+                break
+        elif os.path.exists(post_pose):
+            if is_pose_invalid(post_pose):
+                pose = post_pose
+                break
 
-    # Extension filter: if not specified don't filter (condition always true);
-    # otherwise, use a lambda expression to filter out files whose extension
-    # is not "extension_filter"
-    if extension_filter is None:
-        # This looks hackish...there is probably a better way
-        def ext_cond(filename): return True
-    else:
-        def ext_cond(filename): return filename.endswith(extension_filter)
+    assert os.path.exists(color)
+    assert os.path.exists(depth)
+    assert os.path.exists(label)
+    assert os.path.exists(instance)
+    assert os.path.exists(pose)
 
-    filtered_files = []
-
-    # Explore the directory tree to get files that contain "name_filter" and
-    # with extension "extension_filter"
-    for path, _, files in os.walk(folder):
-        files.sort()
-        for file in files:
-            if name_cond(file) and ext_cond(file):
-                full_path = os.path.join(path, file)
-                filtered_files.append(full_path)
-
-    return filtered_files
+    return color, depth, label, instance, pose
 
 
-def is_pose_invalid(pose_path):
+def is_pose_invalid(pose_path) -> bool:
     pose = np.loadtxt(pose_path)
     return (np.isinf(pose).any() or np.isnan(pose).any())
 
@@ -162,14 +121,14 @@ def load_depth_coords(pose_path: StringType, depth_path: StringType, intrinsic_p
 
     """
 
-    assert load_mode == "coords" 
-    
+    assert load_mode == "coords"
+
     # Load intrinsic
     intrinsic = torch.Tensor(np.loadtxt(intrinsic_path, dtype=np.float32))
-    
+
     # Load depth
     depth = torch.Tensor(np.array(imageio.imread(depth_path)).astype(np.float32) / 1000.0)
-    h, w = depth.shape[0], depth.shape[1] 
+    h, w = depth.shape[0], depth.shape[1]
 
     # Load pose
     pose = torch.Tensor(np.loadtxt(pose_path, dtype=np.float32))
@@ -238,7 +197,7 @@ def load_target(image_id: int, label_path: StringType, instance_path: StringType
     labels = []
     masks = []
     area = []
-    for inst in insts: 
+    for inst in insts:
         regions = torch.where(instance_masks == inst)
         label = label_masks[regions][0].to(torch.int64)
         if label in [0]:
@@ -293,17 +252,17 @@ def scannet_loader(image_id: int, path_set: dict, load_mode: StringType, preproc
     if load_mode == 'rgb':
         rgb = load_rgb(path_set['rgb'])
         return rgb, None, None, target
-    
+
     elif load_mode == 'depth':
         rgb = load_rgb(path_set['rgb'])
         depth = load_depth(path_set['depth'])
         return rgb, depth, None, target
-    
+
     elif load_mode == 'coords':
         rgb = load_rgb(path_set['rgb'])
         depth, coords = load_depth_coords(path_set['pose'], path_set['depth'], path_set['intrinsic'], load_mode)
         return rgb, depth, coords, target
-        
+
     else:
         assert load_mode == 'load_target_only'
         return None, None, None, target
