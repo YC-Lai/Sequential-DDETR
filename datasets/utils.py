@@ -200,8 +200,8 @@ def load_target(image_id: int, label_path: StringType, instance_path: StringType
     for inst in insts:
         regions = torch.where(instance_masks == inst)
         label = label_masks[regions][0].to(torch.int64)
-        if label in [0]:
-            continue
+        # if label in [0]:
+        #     continue
         bbox = torch.tensor([torch.min(regions[1]), torch.min(regions[0]),
                             torch.max(regions[1]), torch.max(regions[0])], dtype=torch.int)
         mask = (instance_masks == inst).clone().detach().to(torch.int)

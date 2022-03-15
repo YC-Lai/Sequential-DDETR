@@ -26,8 +26,8 @@ import random
 import json
 import datetime
 import argparse
-import sys
-sys.path.remove('/home/aicenteruav/catkin_ws/devel/lib/python2.7/dist-packages')
+# import sys
+# sys.path.remove('/home/aicenteruav/catkin_ws/devel/lib/python2.7/dist-packages')
 
 
 def get_args_parser():
@@ -172,13 +172,7 @@ def main(args):
         if args.cache_mode:
             sampler_train = samplers.NodeDistributedSampler(dataset_train)
             sampler_val = samplers.NodeDistributedSampler(dataset_val, shuffle=False)
-        else:
-            sampler_train = samplers.DistributedSampler(dataset_train)
-            sampler_val = samplers.DistributedSampler(dataset_val, shuffle=False)
-    else:
-        sampler_train = torch.utils.data.RandomSampler(dataset_train)
-        sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-
+        else:Depth_Img
     batch_sampler_train = torch.utils.data.BatchSampler(sampler_train, args.batch_size, drop_last=True)
 
     data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,

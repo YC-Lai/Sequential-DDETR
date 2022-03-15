@@ -67,7 +67,9 @@ class HungarianMatcher(nn.Module):
         # We flatten to compute the cost matrices in a batch
         out_prob = outputs["pred_logits"].flatten(0, 1).sigmoid()  # [bs_frames * num_queries, num_classes]
         out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [bs_frames * num_queries, 4]
-
+        if len(out_bbox) == 0:
+            print(out_bbox)
+            exit()
         # Also concat the target labels and boxes
         tgt_ids = torch.cat([v["labels"] for v in targets])
         tgt_bbox = torch.cat([v["boxes"] for v in targets])
