@@ -9,6 +9,8 @@ import torch
 from torch._C import StringType
 import torchvision.transforms as transforms
 
+from tqdm import tqdm
+
 
 def get_files_cumulativeNum(root_dir, scene_list, num_frames) -> list:
     """Helper function that returns a list of the cumulative number of data
@@ -23,7 +25,8 @@ def get_files_cumulativeNum(root_dir, scene_list, num_frames) -> list:
 
     cumulative_num = []
     count = 0
-    for scene in scene_list:
+    print("start accumulating ...")
+    for scene in tqdm(scene_list, total=len(scene_list)):
         cumulative_num.append(count)
         path = os.path.join(root_dir, scene, 'color')
         if not os.path.isdir(path):
@@ -33,9 +36,9 @@ def get_files_cumulativeNum(root_dir, scene_list, num_frames) -> list:
     return cumulative_num, count
 
 
-def get_file(root_dir, scene, id, num_frames):
+def get_file(root_dir, scene, index, num_frames):
 
-    filename = str(id)
+    filename = str(index)
 
     color = os.path.join(root_dir, scene, 'color', filename + '.jpg')
     depth = os.path.join(root_dir, scene, 'depth', filename + '.png')
@@ -47,22 +50,19 @@ def get_file(root_dir, scene, id, num_frames):
     pace = 0
     while is_pose_invalid(pose):
         pace += 1
-        pre_pose = os.path.join(root_dir, scene, 'pose', str(id - pace) + '.txt')
-        post_pose = os.path.join(root_dir, scene, 'pose', str(id + pace) + '.txt')
+        pre_pose = os.path.join(root_dir, scene, 'pose', str(index - pace) + '.txt')
+        post_pose = os.path.join(root_dir, scene, 'pose', str(index + pace) + '.txt')
         if os.path.exists(pre_pose):
-            if is_pose_invalid(pre_pose):
                 pose = pre_pose
-                break
         elif os.path.exists(post_pose):
-            if is_pose_invalid(post_pose):
                 pose = post_pose
-                break
 
     assert os.path.exists(color)
     assert os.path.exists(depth)
     assert os.path.exists(label)
     assert os.path.exists(instance)
     assert os.path.exists(pose)
+    assert not is_pose_invalid(pose)
 
     return color, depth, label, instance, pose
 
@@ -162,7 +162,7 @@ def load_label(label_path: StringType, preprocessing_map, seg_classes='nyu40'):
     """
 
     # Load label
-    label = torch.Tensor(np.array(imageio.imread(label_path)).astype(np.uint8))
+    label = torch.Tensor(np.array(imageio.imread(label_path)).astype(np.int32))
     label = rawCategory_to_nyu40(label, preprocessing_map)
     if seg_classes.lower() == 'scannet20':
         # Remap classes from 'nyu40' to 'scannet20'
@@ -200,8 +200,8 @@ def load_target(image_id: int, label_path: StringType, instance_path: StringType
     for inst in insts:
         regions = torch.where(instance_masks == inst)
         label = label_masks[regions][0].to(torch.int64)
-        if label in [0]:
-            continue
+   #     if label in [0]:
+   #         continue
         bbox = torch.tensor([torch.min(regions[1]), torch.min(regions[0]),
                             torch.max(regions[1]), torch.max(regions[0])], dtype=torch.int)
         mask = (instance_masks == inst).clone().detach().to(torch.int)
@@ -225,7 +225,8 @@ def load_target(image_id: int, label_path: StringType, instance_path: StringType
         'area': area,
         'orig_size': orig_size,
         'size': size,
-        'iscrowd': torch.zeros_like(labels)
+        'iscrowd': torch.zeros_like(labels),
+        'image_name': instance_path
     }
 
     return target
@@ -273,7 +274,7 @@ def get_preprocessing_map(label_map):
     with open(label_map) as csvfile:
         reader = csv.DictReader(csvfile, delimiter='\t')
         for row in reader:
-            if type(row["nyu40id"]) != int:
+            if not row["nyu40id"].isnumeric():
                 mapping[int(row["id"])] = 40
             else:
                 mapping[int(row["id"])] = int(row["nyu40id"])
@@ -319,7 +320,7 @@ def create_label_image(output, color_palette):
     - color_palette (``OrderedDict``): Contains (R, G, B) colors (uint8) for each class.
     """
 
-    label_image = np.zeros((output.shape[0], output.shape[1], 3), dtype=np.uint8)
+    label_image = np.zeros((output.shape[0], output.shape[1], 3), dtype=np.uint16)
     for idx, color in enumerate(color_palette):
         label_image[output == idx] = color
     return label_image

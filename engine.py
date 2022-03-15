@@ -41,7 +41,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):  
-        targets = [{k: v.to(device) for k, v in t.items()} for target in targets for t in target]
+        targets = [{k: v.to(device) if k != "image_name" else v for k, v in t.items()} for target in targets for t in target]
         outputs = model(samples)        
         loss_dict = criterion(outputs, targets)
         

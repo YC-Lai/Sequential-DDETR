@@ -29,7 +29,7 @@ from collections import Counter
 
 # needed due to empty tensor bug in pytorch and torchvision 0.5
 import torchvision
-if float(torchvision.__version__[2:-2]) < 5:
+if float(torchvision.__version__[2:4]) < 5:
     import math
     from torchvision.ops.misc import _NewEmptyTensorOp
 
@@ -58,7 +58,7 @@ if float(torchvision.__version__[2:-2]) < 5:
         return [
             int(math.floor(input.size(i + 2) * scale_factors[i])) for i in range(dim)
         ]
-elif float(torchvision.__version__[2:-2]) < 7:
+elif float(torchvision.__version__[2:4]) < 7:
     from torchvision.ops import _new_empty_tensor
     from torchvision.ops.misc import _output_size
 
@@ -183,19 +183,24 @@ def reduce_dict(input_dict, average=True):
     world_size = get_world_size()
     if world_size < 2:
         return input_dict
+
+    cudadevice_name = None
     with torch.no_grad():
         names = []
         values = []
         # sort the keys so that they are consistent across processes
         for k in sorted(input_dict.keys()):
             names.append(k)
-            values.append(input_dict[k])
+            if(input_dict[k].is_cuda):
+                cudadevice_name = input_dict[k].device
+            values.append(input_dict[k].to(cudadevice_name))
         values = torch.stack(values, dim=0)
         dist.all_reduce(values)
         if average:
             values /= world_size
         reduced_dict = {k: v for k, v in zip(names, values)}
     return reduced_dict
+
 
 
 class MetricLogger(object):
@@ -450,11 +455,16 @@ def init_distributed_mode(args):
         args.gpu = int(os.environ['LOCAL_RANK'])
         args.dist_url = 'env://'
         os.environ['LOCAL_SIZE'] = str(torch.cuda.device_count())
+        # print(os.environ["RANK"])
+        # print(os.environ['LOCAL_RANK'])
     elif 'SLURM_PROCID' in os.environ:
         proc_id = int(os.environ['SLURM_PROCID'])
+        print("here?")
+        print(proc_id)
         ntasks = int(os.environ['SLURM_NTASKS'])
         node_list = os.environ['SLURM_NODELIST']
         num_gpus = torch.cuda.device_count()
+        print(num_gpus)
         addr = subprocess.getoutput(
             'scontrol show hostname {} | head -n1'.format(node_list))
         os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', '29500')
@@ -473,8 +483,11 @@ def init_distributed_mode(args):
         return
 
     args.distributed = True
-
+    # print(args.gpu)
+    print(torch.cuda.device_count())
+    # exit()
     torch.cuda.set_device(args.gpu)
+    # exit()
     args.dist_backend = 'nccl'
     print('| distributed init (rank {}): {}'.format(
         args.rank, args.dist_url), flush=True)
@@ -510,15 +523,15 @@ def interpolate(input, size=None, scale_factor=None, mode="nearest", align_corne
     This will eventually be supported natively by PyTorch, and this
     class can go away.
     """
-    if float(torchvision.__version__[2:-2]) < 7:
+    if float(torchvision.__version__[2:4]) < 7:
         if input.numel() > 0:
             return torch.nn.functional.interpolate(
                 input, size, scale_factor, mode, align_corners
             )
 
         output_shape = _output_size(2, input, size, scale_factor)
-        output_shape = list(input.shape[:-2]) + list(output_shape)
-        if float(torchvision.__version__[2:-2]) < 5:
+        output_shape = list(input.shape[:4]) + list(output_shape)
+        if float(torchvision.__version__[2:4]) < 5:
             return _NewEmptyTensorOp.apply(input, output_shape)
         return _new_empty_tensor(input, output_shape)
     else:
