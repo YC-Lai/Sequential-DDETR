@@ -90,7 +90,7 @@ class ScanNet(VisionDataset):
             rgb, depth, coords, target = self.loader(
                 index, path_set, self.load_mode, self.preprocessing_map, self.seg_classes)
             rgb, depth, coords, target = self.transforms(rgb, depth, coords, target)
-
+           
             # concatenate all sources into data
             if self.load_mode == 'rgb':
                 data = rgb
@@ -112,6 +112,7 @@ class ScanNet(VisionDataset):
         Returns:
         A tuple of ``PIL.Image`` (image, label) where label is the ground-truth of the image
         """
+        # index = index * (self.num_frames*3)
         scene_id, data_start_id = self.get_data_Id(index)
         data, targets = self.get_data_sequence(scene_id, data_start_id)
 
@@ -119,7 +120,8 @@ class ScanNet(VisionDataset):
 
     def __len__(self):
         """ Returns the sequential length of the dataset. """
-        return self.length
+        # return self.length // (self.num_frames*3)
+        return self.length 
 
     def get_color_encoding(self):
         if self.seg_classes.lower() == 'nyu40':

@@ -123,7 +123,11 @@ def resize(rgb, depth, coords, target, size, max_size=None):
 
         rescaled_image = F.resize(rgb, (size[0], size[1]))
         rescaled_depth = F.resize(depth, (size[0], size[1]), interpolation=InterpolationMode.NEAREST)
-        rescaled_depth = (rescaled_depth - rescaled_depth.min()) / (rescaled_depth.max() - rescaled_depth.min()) * 255
+        
+        if(rescaled_depth.max() == rescaled_depth.min()):
+            rescaled_depth = (rescaled_depth - rescaled_depth.min())
+        else:
+            rescaled_depth = (rescaled_depth - rescaled_depth.min()) / (rescaled_depth.max() - rescaled_depth.min()) * 255
         rescaled_coords = F.resize(coords, (size[0], size[1]))
 
         ratios = tuple(float(s) / float(s_orig)
@@ -155,6 +159,7 @@ def resize(rgb, depth, coords, target, size, max_size=None):
     if "masks" in target:
         target['masks'] = torch.nn.functional.interpolate(
             target['masks'][:, None].float(), (h, w), mode="nearest")[:, 0] > 0.5
+
     return rescaled_image, rescaled_depth, rescaled_coords, target
 
 
@@ -275,6 +280,7 @@ class Normalize(object):
     def __call__(self, rgb, depth, coords, target=None):
         if rgb is not None:
             image = F.normalize(rgb / 255.0, mean=self.mean, std=self.std)
+            raw_depth = depth
             depth = F.normalize(depth / 255.0, mean=self.mean[0], std=self.std[0])
             h, w = image.shape[-2:]
         else:
@@ -290,6 +296,7 @@ class Normalize(object):
             boxes = box_xyxy_to_cxcywh(boxes)
             boxes = boxes / torch.tensor([w, h, w, h], dtype=torch.float32)
             target["boxes"] = boxes
+
         return image, depth, coords, target
 
 
