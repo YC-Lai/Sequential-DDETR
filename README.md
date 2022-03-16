@@ -61,17 +61,6 @@ python test.py
 
 Please download [ScanNet dataset](http://www.scan-net.org/) and organize them as following:
 
-```
-code_root/
-└── data/
-    └── coco/
-        ├── train2017/
-        ├── val2017/
-        └── annotations/
-        	├── instances_train2017.json
-        	└── instances_val2017.json
-```
-
 ### Training
 
 #### Training on single node
@@ -116,4 +105,3 @@ GPUS_PER_NODE=8 ./tools/run_dist_slurm.sh <partition> deformable_detr 16 configs
 
 - If your file system is slow to read images, you may consider enabling '--cache_mode' option to load whole dataset into memory at the beginning of training.
 - You may increase the batch size to maximize the GPU utilization, according to GPU memory of yours, e.g., set '--batch_size 3' or '--batch_size 4'.
-
